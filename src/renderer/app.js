@@ -1,517 +1,1270 @@
-// ===== Secure Browser — Renderer Process (Browser Chrome) =====
-// This UI runs in the Electron renderer process AND in the web preview (Vite dev server).
-// In Electron, page navigation is handled via BrowserView; in the web preview,
-// an <iframe> is used as a fallback (some sites block embedding via X-Frame-Options).
+// ===== Secure Browser — renderer =====
+// Chromium-family chrome: Chromium tab strip + omnibox, Brave-style privacy
+// shield, Edge-style vertical tabs, Opera-style sidebar, Google app launcher.
+//
+// Architecture: the static shell is built once; dynamic regions (tab strip,
+// toolbar state, bookmarks bar, content area, status bar) are updated
+// independently so that changing a preference never reloads the open page.
 
-const STORAGE_KEY = 'secure-browser-state';
+import { ICONS } from './icons.js';
+import { SEARCH_ENGINES, DEFAULT_SEARCH_ENGINE, GOOGLE_APPS, DEFAULT_SHORTCUTS, ACCENTS } from './data.js';
+import * as store from './store.js';
+import { renderNewTab, renderPanel } from './panels.js';
+import {
+  escapeHtml, uid, hostOf, prettyUrl, normalizeInput, looksLikeUrl,
+  faviconColor, faviconLetter, relativeTime, initials,
+} from './util.js';
 
-// ----- State -----
-let state = {
-  tabs: [],
-  activeTabId: null,
+const icon = k => ICONS[k] || '';
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+
+/* ------------------------------------------------------------------ */
+/*  State                                                              */
+/* ------------------------------------------------------------------ */
+
+let prefs = store.getPrefs();
+
+const savedTabs = store.getSession('tabs', null);
+const savedActive = store.getSession('activeTabId', null);
+
+const state = {
+  tabs: savedTabs && savedTabs.length ? savedTabs : [],
+  activeTabId: savedActive,
+  panel: null,
+  history: store.getSession('history', []),
+  closedTabs: store.getSession('closedTabs', []),
+  bookmarks: store.getList('bookmarks', []),
+  shortcuts: store.getList('shortcuts', null) || DEFAULT_SHORTCUTS.map(s => ({ ...s })),
+  addresses: store.getList('addresses', []),
+  cards: store.getList('cards', []),
+  logins: store.getList('logins', []),
+  downloads: store.getList('downloads', []),
+  profile: store.getList('profile', null),
+  syncEnabled: store.getList('profile', null) ? true : false,
+  syncScopes: { bookmarks: true, shortcuts: true, autofill: true, settings: true },
+  lastSync: null,
+  suggestions: [],
+  suggestIndex: -1,
+  ui: { historyQuery: '' },
 };
 
-let nextTabId = 1;
+let nextId = 1;
+let contentKey = '';
+let loadingTimer = null;
 
-// ----- Icon set (inline SVG — Chromium-family look) -----
-const ICONS = {
-  back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>',
-  forward: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>',
-  reload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L21 10"/></svg>',
-  home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>',
-  menu: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg>',
-  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>',
-  close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>',
-  shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6l7-3z"/></svg>',
-  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10.5" width="15" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg>',
-  globe: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5a13 13 0 0 1 0 17 13 13 0 0 1 0-17z"/></svg>',
-  tor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 0 1 9 9"/><path d="M12 7a5 5 0 0 1 5 5"/><path d="M12 11.5a.5.5 0 0 1 .5.5"/><path d="M12 21a9 9 0 0 1-9-9"/><path d="M12 17a5 5 0 0 1-5-5"/></svg>',
-  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
-  code: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 9 5.5 12l3 3"/><path d="M15.5 9l3 3-3 3"/></svg>',
-  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9.5 7V5h5v2"/><path d="M6.5 7l1 13h9l1-13"/></svg>',
-  star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8L12 17l-5.3 2.6 1-5.8L3.5 9.7l5.9-.9L12 3.5z"/></svg>'
-};
+function tabId() { return `t${nextId++}`; }
 
-// ----- Persistence (session-only, cleared on close) -----
-// Per spec: strictly stateless. We use sessionStorage so nothing survives a restart.
-function saveState() {
-  try {
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch (e) {
-    // ignore quota errors
-  }
-}
-
-function loadState() {
-  try {
-    const saved = sessionStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed.tabs && parsed.tabs.length > 0) {
-        state = parsed;
-        nextTabId = Math.max(...parsed.tabs.map(t => t.id)) + 1;
-        return true;
-      }
-    }
-  } catch (e) {
-    // ignore
-  }
-  return false;
-}
-
-// ----- Tab Model -----
-function createTab(mode = 'standard', url = '') {
-  const tab = {
-    id: nextTabId++,
-    mode,         // 'standard' | 'tor'
-    url,
-    title: url ? url : 'New Tab',
-    history: url ? [url] : [],
-    historyIndex: url ? 0 : -1,
-    canGoBack: false,
-    canGoForward: false,
-  };
-  state.tabs.push(tab);
-  state.activeTabId = tab.id;
-  saveState();
-  return tab;
+function persistSession() {
+  store.setSession('tabs', state.tabs);
+  store.setSession('activeTabId', state.activeTabId);
+  store.setSession('history', state.history);
+  store.setSession('closedTabs', state.closedTabs);
 }
 
 function getActiveTab() {
-  return state.tabs.find(t => t.id === state.activeTabId);
+  return state.tabs.find(t => t.id === state.activeTabId) || null;
 }
 
-function closeTab(tabId) {
-  const idx = state.tabs.findIndex(t => t.id === tabId);
+/* ------------------------------------------------------------------ */
+/*  Tabs                                                               */
+/* ------------------------------------------------------------------ */
+
+function createTab(mode = 'standard', url = '', opts = {}) {
+  const tab = {
+    id: tabId(),
+    mode,
+    url,
+    title: url ? prettyUrl(url) : 'New Tab',
+    pinned: false,
+    muted: false,
+    zoom: 1,
+    history: url ? [url] : [],
+    historyIndex: url ? 0 : -1,
+  };
+  const insertAt = tab.pinned ? 0 : state.tabs.length;
+  state.tabs.splice(insertAt, 0, tab);
+  if (opts.activate !== false) state.activeTabId = tab.id;
+  if (url && mode !== 'private') recordHistory(url, tab.title);
+  orderPinned();
+  persistSession();
+  renderAll();
+  return tab;
+}
+
+function orderPinned() {
+  state.tabs.sort((a, b) => (a.pinned === b.pinned ? 0 : a.pinned ? -1 : 1));
+}
+
+function closeTab(id) {
+  const idx = state.tabs.findIndex(t => t.id === id);
   if (idx === -1) return;
-  state.tabs.splice(idx, 1);
-  if (state.activeTabId === tabId) {
-    if (state.tabs.length > 0) {
-      // Activate the previous tab, or the first one
-      const newIdx = Math.min(idx, state.tabs.length - 1);
-      state.activeTabId = state.tabs[newIdx].id;
-    } else {
-      // No tabs left — create a fresh one
-      createTab('standard');
-    }
+  const [closed] = state.tabs.splice(idx, 1);
+  if (closed.url && closed.mode !== 'private') {
+    state.closedTabs.unshift({ url: closed.url, title: closed.title });
+    state.closedTabs = state.closedTabs.slice(0, 25);
   }
-  saveState();
+  if (state.activeTabId === id) {
+    const next = state.tabs[Math.min(idx, state.tabs.length - 1)];
+    state.activeTabId = next ? next.id : null;
+  }
+  if (!state.tabs.length) { createTab('standard'); return; }
+  persistSession();
+  renderAll();
 }
 
-function activateTab(tabId) {
-  state.activeTabId = tabId;
-  saveState();
+function activateTab(id) {
+  state.activeTabId = id;
+  state.panel = null;
+  persistSession();
+  renderAll();
 }
 
-function navigateTo(url) {
+function duplicateTab(id) {
+  const t = state.tabs.find(x => x.id === id);
+  if (!t) return;
+  createTab(t.mode, t.url);
+  toast('Tab duplicated');
+}
+
+function togglePin(id) {
+  const t = state.tabs.find(x => x.id === id);
+  if (!t) return;
+  t.pinned = !t.pinned;
+  orderPinned();
+  persistSession();
+  renderTabs();
+  toast(t.pinned ? 'Tab pinned' : 'Tab unpinned');
+}
+
+function toggleMute(id) {
+  const t = state.tabs.find(x => x.id === id);
+  if (!t) return;
+  t.muted = !t.muted;
+  renderTabs();
+}
+
+function reopenClosedTab() {
+  const last = state.closedTabs.shift();
+  if (!last) { toast('No recently closed tabs'); return; }
+  persistSession();
+  createTab('standard', last.url);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Navigation                                                         */
+/* ------------------------------------------------------------------ */
+
+function recordHistory(url, title) {
+  state.history.unshift({ id: uid('h'), url, title: title || hostOf(url) || url, at: Date.now() });
+  state.history = state.history.slice(0, 500);
+}
+
+function navigate(rawInputOrUrl, opts = {}) {
   const tab = getActiveTab();
   if (!tab) return;
-  // Normalize URL
-  let finalUrl = url.trim();
-  if (!finalUrl) return;
-  if (!/^https?:\/\//i.test(finalUrl) && !finalUrl.startsWith('about:')) {
-    // Check if it looks like a domain
-    if (/\.[a-z]{2,}/i.test(finalUrl)) {
-      finalUrl = 'https://' + finalUrl;
-    } else {
-      // Treat as search query
-      finalUrl = 'https://duckduckgo.com/?q=' + encodeURIComponent(finalUrl);
-    }
-  }
-  tab.url = finalUrl;
-  tab.title = finalUrl;
-  // Reset forward history
+  const url = /^[a-z]+:\/\//i.test(rawInputOrUrl) || /^chrome:/i.test(rawInputOrUrl)
+    ? rawInputOrUrl
+    : normalizeInput(rawInputOrUrl, prefs.searchEngine);
+  if (!url) return;
+  state.panel = null;
+  tab.url = url;
+  tab.title = prettyUrl(url);
   tab.history = tab.history.slice(0, tab.historyIndex + 1);
-  tab.history.push(finalUrl);
+  tab.history.push(url);
   tab.historyIndex = tab.history.length - 1;
-  tab.canGoBack = tab.historyIndex > 0;
-  tab.canGoForward = false;
-  saveState();
+  if (tab.mode !== 'private') recordHistory(url, tab.title);
+  startLoading();
+  persistSession();
+  renderAll();
 }
 
 function goBack() {
-  const tab = getActiveTab();
-  if (!tab || !tab.canGoBack) return;
-  tab.historyIndex--;
-  tab.url = tab.history[tab.historyIndex];
-  tab.title = tab.url;
-  tab.canGoBack = tab.historyIndex > 0;
-  tab.canGoForward = true;
-  saveState();
+  const t = getActiveTab();
+  if (!t || t.historyIndex <= 0) return;
+  t.historyIndex--;
+  t.url = t.history[t.historyIndex];
+  t.title = prettyUrl(t.url);
+  state.panel = null;
+  persistSession();
+  renderAll();
 }
 
 function goForward() {
-  const tab = getActiveTab();
-  if (!tab || !tab.canGoForward) return;
-  tab.historyIndex++;
-  tab.url = tab.history[tab.historyIndex];
-  tab.title = tab.url;
-  tab.canGoBack = true;
-  tab.canGoForward = tab.historyIndex < tab.history.length - 1;
-  saveState();
-}
-
-function reload() {
-  const tab = getActiveTab();
-  if (!tab || !tab.url) return;
-  // Force a re-render by toggling a reload counter
-  render();
+  const t = getActiveTab();
+  if (!t || t.historyIndex >= t.history.length - 1) return;
+  t.historyIndex++;
+  t.url = t.history[t.historyIndex];
+  t.title = prettyUrl(t.url);
+  state.panel = null;
+  persistSession();
+  renderAll();
 }
 
 function goHome() {
-  const tab = getActiveTab();
-  if (tab) {
-    tab.url = '';
-    tab.title = 'New Tab';
-    saveState();
-    render();
+  const t = getActiveTab();
+  if (!t) return;
+  t.url = '';
+  t.title = 'New Tab';
+  state.panel = null;
+  persistSession();
+  renderAll();
+}
+
+function reloadContent(force = false) {
+  const t = getActiveTab();
+  if (!t || (!t.url && !state.panel)) return;
+  startLoading();
+  contentKey = '';           // force the content area to rebuild
+  renderContent(true);
+}
+
+function startLoading() {
+  clearTimeout(loadingTimer);
+  const btn = $('#reload-btn');
+  if (btn) { btn.innerHTML = icon('stop'); btn.dataset.loading = '1'; btn.title = 'Stop'; }
+  loadingTimer = setTimeout(stopLoading, 4000);
+}
+
+function stopLoading() {
+  clearTimeout(loadingTimer);
+  const btn = $('#reload-btn');
+  if (btn) { btn.innerHTML = icon('reload'); delete btn.dataset.loading; btn.title = 'Reload'; }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Omnibox                                                            */
+/* ------------------------------------------------------------------ */
+
+function omniboxValue() {
+  if (state.panel) return `chrome://${state.panel}`;
+  const t = getActiveTab();
+  return t ? t.url : '';
+}
+
+function buildSuggestions(query) {
+  const q = query.trim();
+  const out = [];
+  if (!q) return out;
+  const engine = SEARCH_ENGINES[prefs.searchEngine] || SEARCH_ENGINES.google;
+
+  if (looksLikeUrl(q)) {
+    out.push({ kind: 'url', label: q, sub: 'Open URL', url: normalizeInput(q, prefs.searchEngine), icon: 'globe' });
+  } else {
+    out.push({ kind: 'search', label: q, sub: `Search ${engine.name}`, url: normalizeInput(q, prefs.searchEngine), icon: 'search' });
   }
+
+  if (prefs.suggestFromHistory) {
+    const seen = new Set(out.map(o => o.url));
+    const pool = [...state.history, ...state.bookmarks, ...state.shortcuts];
+    for (const item of pool) {
+      if (out.length >= 6) break;
+      const title = item.title || '';
+      const url = item.url || '';
+      if (!url || seen.has(url)) continue;
+      if (title.toLowerCase().includes(q.toLowerCase()) || url.toLowerCase().includes(q.toLowerCase())) {
+        seen.add(url);
+        out.push({ kind: 'local', label: title || hostOf(url), sub: prettyUrl(url), url, icon: 'history' });
+      }
+    }
+  }
+  return out;
 }
 
-function toggleMenu() {
-  const dropdown = document.getElementById('dropdown');
-  if (dropdown) dropdown.classList.toggle('open');
+function renderSuggestions() {
+  const box = $('#omnibox-suggest');
+  if (!box) return;
+  if (!state.suggestions.length) { box.classList.remove('open'); box.innerHTML = ''; return; }
+  box.innerHTML = state.suggestions.map((s, i) => `
+    <div class="suggest ${i === state.suggestIndex ? 'sel' : ''}" data-suggest="${i}">
+      <span class="suggest-ico">${icon(s.icon)}</span>
+      <span class="suggest-text"><span class="suggest-label">${escapeHtml(s.label)}</span><span class="suggest-sub">${escapeHtml(s.sub)}</span></span>
+      <span class="suggest-go">${icon('arrowUpRight')}</span>
+    </div>`).join('');
+  box.classList.add('open');
 }
 
-// ----- Rendering -----
-const app = document.getElementById('app');
+function closeSuggestions() {
+  state.suggestions = [];
+  state.suggestIndex = -1;
+  const box = $('#omnibox-suggest');
+  if (box) { box.classList.remove('open'); box.innerHTML = ''; }
+}
 
-function render() {
-  const tab = getActiveTab();
-  if (!tab) return;
+function openSuggestions(query) {
+  state.suggestions = buildSuggestions(query);
+  state.suggestIndex = -1;
+  renderSuggestions();
+}
 
-  app.innerHTML = `
-    <!-- Tab strip -->
-    <header class="title-bar">
-      <div class="tab-strip">
-        ${state.tabs.map(t => `
-          <div class="tab ${t.id === state.activeTabId ? 'active' : ''} ${t.mode}-mode"
-               data-tab-id="${t.id}" title="${escapeHtml(t.title)}">
-            <span class="tab-favicon ${t.mode}">${t.mode === 'tor' ? ICONS.tor : ICONS.globe}</span>
-            <span class="tab-title">${escapeHtml(t.title)}</span>
-            <span class="tab-close" data-close-id="${t.id}" title="Close tab">${ICONS.close}</span>
+/* ------------------------------------------------------------------ */
+/*  Shell (built once)                                                 */
+/* ------------------------------------------------------------------ */
+
+function ensureShell() {
+  const root = document.getElementById('app');
+  if (root.querySelector('#browser')) return;
+
+  root.innerHTML = `
+    <div class="browser" id="browser">
+      <header class="title-bar" id="title-bar">
+        <div class="tab-strip" id="tab-strip"></div>
+        <div class="title-actions">
+          <button class="icon-btn" id="vtabs-toggle" title="Toggle vertical tabs">${icon('layout')}</button>
+        </div>
+      </header>
+
+      <div class="toolbar" id="toolbar">
+        <div class="nav-group">
+          <button class="icon-btn" id="back-btn" data-action="back" title="Back (Alt+←)">${icon('back')}</button>
+          <button class="icon-btn" id="fwd-btn" data-action="forward" title="Forward (Alt+→)">${icon('forward')}</button>
+          <button class="icon-btn" id="reload-btn" data-action="reload" title="Reload (Ctrl+R)">${icon('reload')}</button>
+          <button class="icon-btn" id="home-btn" data-action="home" title="Home">${icon('home')}</button>
+        </div>
+
+        <div class="omnibox-wrap">
+          <div class="omnibox" id="omnibox">
+            <span class="security-indicator" id="sec-ind"></span>
+            <input id="url-input" type="text" placeholder="Search Google or type a URL"
+                   autocomplete="off" spellcheck="false" aria-label="Address and search bar" />
+            <button class="icon-btn sm" id="star-btn" data-action="toggle-star" title="Bookmark this page">${icon('star')}</button>
           </div>
-        `).join('')}
-        <button class="tab-new" id="new-tab-btn" title="New tab">${ICONS.plus}</button>
-      </div>
-    </header>
+          <div class="omnibox-suggest" id="omnibox-suggest"></div>
+        </div>
 
-    <!-- Toolbar -->
-    <div class="toolbar">
-      <div class="nav-group">
-        <button class="icon-btn" id="back-btn" title="Back" ${!tab.canGoBack ? 'disabled' : ''}>${ICONS.back}</button>
-        <button class="icon-btn" id="fwd-btn" title="Forward" ${!tab.canGoForward ? 'disabled' : ''}>${ICONS.forward}</button>
-        <button class="icon-btn" id="reload-btn" title="Reload">${ICONS.reload}</button>
-        <button class="icon-btn" id="home-btn" title="Home">${ICONS.home}</button>
+        <div class="tool-group">
+          <button class="icon-btn" id="shield-btn" data-action="toggle-shield" title="Privacy shield">${icon('shield')}</button>
+          <button class="icon-btn" id="apps-btn" title="Google apps">${icon('grid')}</button>
+          <button class="profile-btn" id="profile-btn" title="Account"></button>
+          <button class="icon-btn" id="menu-btn" title="Menu">${icon('menu')}</button>
+        </div>
       </div>
 
-      <div class="omnibox ${tab.mode}">
-        <span class="security-indicator ${tab.mode}"
-              title="${tab.mode === 'tor' ? 'Tor routing active — DNS proxied' : 'Connection security'}">
-          ${tab.mode === 'tor' ? ICONS.tor : (tab.url && tab.url.startsWith('https') ? ICONS.lock : ICONS.globe)}
-        </span>
-        <input type="text" id="url-input" placeholder="Search or enter address"
-               value="${escapeHtml(tab.url || '')}" spellcheck="false" autocomplete="off" />
-        <span class="omnibox-trailing" title="${tab.mode === 'tor' ? 'Privacy shield: Tor' : 'Privacy shield: on'}">
-          <span class="shield ${tab.mode}">${ICONS.shield}</span>
-        </span>
+      <div class="bookmarks-bar" id="bookmarks-bar"></div>
+
+      <div class="browser-body" id="browser-body">
+        <nav class="vtabs" id="vtabs" aria-label="Vertical tabs"></nav>
+        <nav class="sidebar" id="sidebar" aria-label="Sidebar">
+          <button class="rail-btn" data-action="open-panel" data-panel="tabs" title="Tabs">${icon('tabs')}</button>
+          <button class="rail-btn" data-action="open-panel" data-panel="bookmarks" title="Bookmarks">${icon('bookmark')}</button>
+          <button class="rail-btn" data-action="open-panel" data-panel="history" title="History">${icon('history')}</button>
+          <button class="rail-btn" data-action="open-panel" data-panel="downloads" title="Downloads">${icon('download')}</button>
+          <button class="rail-btn" data-action="open-panel" data-panel="autofill" title="Autofill & passwords">${icon('key')}</button>
+          <span class="rail-divider"></span>
+          <button class="rail-btn" data-action="open-panel" data-panel="apps" title="Google apps">${icon('grid')}</button>
+          <button class="rail-btn" data-action="new-tor-tab" title="New Tor tab">${icon('tor')}</button>
+          <button class="rail-btn" data-action="new-private-tab" title="New private tab">${icon('incognito')}</button>
+          <span class="rail-spacer"></span>
+          <button class="rail-btn" data-action="open-palette" title="Command palette (Ctrl+K)">${icon('command')}</button>
+          <button class="rail-btn" data-action="open-panel" data-panel="settings" title="Settings">${icon('settings')}</button>
+        </nav>
+        <main class="content-area" id="content-area"></main>
       </div>
 
-      <div class="tool-group">
-        <button class="icon-btn" id="menu-btn" title="Menu">${ICONS.menu}</button>
-      </div>
-    </div>
+      <div class="status-bar" id="status-bar"></div>
 
-    <!-- Body: sidebar + content -->
-    <div class="browser-body">
-      <nav class="sidebar" aria-label="Sidebar">
-        <button class="rail-btn" id="rail-home" title="Home">${ICONS.home}</button>
-        <button class="rail-btn" id="rail-tor" title="Tor privacy tab">${ICONS.tor}</button>
-        <span class="rail-divider"></span>
-        <button class="rail-btn" id="rail-menu" title="Menu">${ICONS.menu}</button>
-      </nav>
-
-      <main class="content-area" id="content-area">
-        ${renderContent(tab)}
-      </main>
-    </div>
-
-    <!-- Tor status bar -->
-    <div class="tor-status ${tab.mode === 'tor' ? 'visible' : ''}">
-      <span class="dot"></span>
-      Tor routing active — all traffic proxied through the Tor network (DNS included). No history, cookies, or cache are persisted.
-    </div>
-
-    <!-- Dropdown menu -->
-    <div class="dropdown" id="dropdown">
-      <div class="dropdown-item" id="menu-new-standard">
-        ${ICONS.globe}<span>New Standard Window</span>
-      </div>
-      <div class="dropdown-item" id="menu-new-tor">
-        ${ICONS.tor}<span>New Tor Privacy Window</span>
-      </div>
-      <div class="dropdown-separator"></div>
-      <div class="dropdown-item" id="menu-devtools">
-        ${ICONS.code}<span>Toggle DevTools (F12)</span>
-      </div>
-      <div class="dropdown-item" id="menu-inspect">
-        ${ICONS.search}<span>Inspect Element</span>
-      </div>
-      <div class="dropdown-separator"></div>
-      <div class="dropdown-item" id="menu-clear">
-        ${ICONS.trash}<span>Clear Session Data</span>
-      </div>
+      <div class="dropdown" id="dropdown"></div>
+      <div class="popover apps-popover" id="apps-popover"></div>
+      <div class="overlay" id="palette"></div>
+      <div class="overlay" id="modal"></div>
+      <div class="toasts" id="toasts"></div>
     </div>
   `;
 
-  attachEventListeners();
+  attachStaticListeners();
+  renderDropdown();
+  renderAppsPopover();
 }
 
-function renderContent(tab) {
-  if (!tab.url) {
-    // New tab page — Opera-style speed dial
-    return `
-      <div class="new-tab-page">
-        <div class="ntp-inner">
-          <div class="ntp-brand">
-            <span class="ntp-logo ${tab.mode}">${tab.mode === 'tor' ? ICONS.tor : ICONS.shield}</span>
-            <h1>Secure Browser</h1>
-            <p class="ntp-sub">
-              ${tab.mode === 'tor' ? 'Tor Privacy Mode — all traffic routed through Tor' : 'Standard Mode — stateless browsing, no history saved'}
-            </p>
-          </div>
-          <div class="speed-dial">
-            <a class="dial-tile" data-url="https://duckduckgo.com">
-              <span class="dial-icon" style="--tile:#de5833">${ICONS.search}</span>
-              <span class="dial-label">DuckDuckGo</span>
-            </a>
-            <a class="dial-tile" data-url="https://en.wikipedia.org">
-              <span class="dial-icon" style="--tile:#8b8b8b">${ICONS.globe}</span>
-              <span class="dial-label">Wikipedia</span>
-            </a>
-            <a class="dial-tile" data-url="https://example.com">
-              <span class="dial-icon" style="--tile:#4c8bf5">${ICONS.globe}</span>
-              <span class="dial-label">Example.com</span>
-            </a>
-            <a class="dial-tile" data-url="https://httpbin.org">
-              <span class="dial-icon" style="--tile:#16b981">${ICONS.code}</span>
-              <span class="dial-label">HTTPBin</span>
-            </a>
-          </div>
-        </div>
-      </div>
-    `;
+/* ------------------------------------------------------------------ */
+/*  Region renderers                                                   */
+/* ------------------------------------------------------------------ */
+
+function renderAll(force = false) {
+  ensureShell();
+  renderTabs();
+  renderToolbar();
+  renderBookmarksBar();
+  renderContent(force);
+  renderStatusBar();
+  applyLayout();
+}
+
+function tabMarkup(t) {
+  const active = t.id === state.activeTabId ? 'active' : '';
+  const fav = t.mode === 'tor'
+    ? `<span class="tab-favicon tor">${icon('tor')}</span>`
+    : t.mode === 'private'
+      ? `<span class="tab-favicon private">${icon('incognito')}</span>`
+      : `<span class="tab-favicon" style="--fav:${faviconColor(hostOf(t.url) || 'new')}">${t.url ? faviconLetter(hostOf(t.url)) : icon('globe')}</span>`;
+  return `
+    <div class="tab ${active} ${t.mode} ${t.pinned ? 'pinned' : ''}" data-tab-id="${t.id}" draggable="true" title="${escapeHtml(t.title)}">
+      ${fav}
+      ${t.pinned ? '' : `<span class="tab-title">${escapeHtml(t.title || 'New Tab')}</span>`}
+      ${t.muted ? `<span class="tab-muted">${icon('mute')}</span>` : ''}
+      ${t.pinned ? '' : `<span class="tab-close" data-close="${t.id}" title="Close tab">${icon('close')}</span>`}
+    </div>`;
+}
+
+function renderTabs() {
+  const strip = $('#tab-strip');
+  const vtabs = $('#vtabs');
+  const html = state.tabs.map(tabMarkup).join('');
+  if (strip) {
+    strip.innerHTML = html + `<button class="tab-new" id="new-tab-btn" title="New tab (Ctrl+T)">${icon('plus')}</button>`;
+  }
+  if (vtabs) vtabs.innerHTML = html;
+}
+
+function renderToolbar() {
+  const t = getActiveTab();
+  $('#back-btn').disabled = !t || t.historyIndex <= 0;
+  $('#fwd-btn').disabled = !t || t.historyIndex >= t.history.length - 1;
+  $('#home-btn').style.display = prefs.showHomeButton ? '' : 'none';
+
+  const omnibox = $('#omnibox');
+  const input = $('#url-input');
+  const sec = $('#sec-ind');
+  const mode = state.panel ? 'internal' : (t ? t.mode : 'standard');
+  omnibox.className = `omnibox ${mode}`;
+  if (document.activeElement !== input) input.value = omniboxValue();
+
+  const secure = t && t.url && t.url.startsWith('https://');
+  const secIcon = mode === 'tor' ? icon('tor')
+    : mode === 'private' ? icon('incognito')
+    : state.panel ? icon('settings')
+    : t && t.url ? (secure ? icon('lock') : icon('unlock'))
+    : icon('search');
+  sec.innerHTML = secIcon;
+  sec.className = `security-indicator ${mode}`;
+
+  // Star
+  const star = $('#star-btn');
+  const isBookmarked = t && t.url && state.bookmarks.some(b => b.url === t.url);
+  star.innerHTML = isBookmarked ? icon('starFilled') : icon('star');
+  star.classList.toggle('on', !!isBookmarked);
+
+  // Shield
+  const shield = $('#shield-btn');
+  shield.innerHTML = prefs.shield ? icon('shield') : icon('shieldOff');
+  shield.classList.toggle('on', prefs.shield);
+  shield.title = prefs.shield ? 'Privacy shield on' : 'Privacy shield off';
+
+  // Profile
+  const profileBtn = $('#profile-btn');
+  profileBtn.innerHTML = state.profile
+    ? `<span class="avatar">${escapeHtml(initials(state.profile.name))}</span>`
+    : `<span class="avatar ghost">${icon('user')}</span>`;
+}
+
+function renderBookmarksBar() {
+  const bar = $('#bookmarks-bar');
+  const show = prefs.bookmarksBar && state.bookmarks.length > 0;
+  bar.classList.toggle('hidden', !show);
+  if (!show) { bar.innerHTML = ''; return; }
+  bar.innerHTML = `
+    <div class="bm-scroll">
+      ${state.bookmarks.map(b => `
+        <button class="bm-item" data-action="open-url" data-url="${escapeHtml(b.url)}" title="${escapeHtml(b.url)}">
+          <span class="fav-dot" style="--fav:${b.color || faviconColor(hostOf(b.url))}">${faviconLetter(hostOf(b.url))}</span>
+          <span class="bm-label">${escapeHtml(b.title || hostOf(b.url))}</span>
+        </button>`).join('')}
+    </div>
+    <button class="icon-btn sm" data-action="open-panel" data-panel="bookmarks" title="All bookmarks">${icon('menuH')}</button>`;
+}
+
+function renderStatusBar() {
+  const bar = $('#status-bar');
+  const t = getActiveTab();
+  let content = '';
+  if (t && t.mode === 'tor') {
+    content = `<span class="dot tor"></span><span>Tor routing active — all traffic proxied through the Tor network, DNS included. Nothing is written to disk.</span>`;
+    bar.className = 'status-bar visible tor';
+  } else if (t && t.mode === 'private') {
+    content = `<span class="dot private"></span><span>Private tab — history, cookies and cache for this tab are discarded when it closes.</span>`;
+    bar.className = 'status-bar visible private';
+  } else {
+    bar.className = 'status-bar';
+    bar.innerHTML = '';
+    return;
+  }
+  bar.innerHTML = content;
+}
+
+function applyLayout() {
+  const body = $('#browser-body');
+  body.classList.toggle('vtabs-on', prefs.verticalTabs);
+  body.classList.toggle('sidebar-off', !prefs.sidebar);
+  body.classList.toggle('compact', prefs.density === 'compact');
+  $('#vtabs-toggle').classList.toggle('on', prefs.verticalTabs);
+}
+
+/* ------------------------------ Content ---------------------------- */
+
+function currentContentKey() {
+  const t = getActiveTab();
+  if (state.panel) return `panel:${state.panel}`;
+  if (!t) return 'none';
+  return `tab:${t.id}:${t.url}:${t.mode}:${t.zoom}`;
+}
+
+function renderContent(force = false) {
+  const area = $('#content-area');
+  if (!area) return;
+  const key = currentContentKey();
+  if (!force && key === contentKey) return;
+  contentKey = key;
+
+  if (state.panel) {
+    area.innerHTML = renderPanel(state.panel, ctx());
+    return;
   }
 
-  // In the web preview, we use an iframe. In Electron, a BrowserView would be used instead.
-  // Many sites send X-Frame-Options/CSP headers that block embedding — we handle that gracefully.
-  return `<iframe class="content-frame" src="${escapeHtml(tab.url)}" sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
-           referrerpolicy="no-referrer" id="content-frame"></iframe>
-          <div class="blocked-overlay" id="blocked-overlay" style="display:none">
-            <span class="blocked-icon">${ICONS.shield}</span>
-            <h2>This site can't be embedded</h2>
-            <p>The site has security headers (X-Frame-Options or CSP) that prevent it from loading inside the browser preview.
-               In the full Electron app, pages render in an isolated BrowserView and are not subject to this limitation.</p>
-            <a href="${escapeHtml(tab.url)}" target="_blank" rel="noopener noreferrer" class="blocked-link">Open in new tab ↗</a>
-          </div>`;
+  const t = getActiveTab();
+  if (!t) { area.innerHTML = ''; return; }
+  if (!t.url) { area.innerHTML = renderNewTab(ctx()); return; }
+
+  area.innerHTML = `
+    <div class="page-wrap">
+      <iframe class="content-frame" id="content-frame" src="${escapeHtml(t.url)}" style="zoom:${t.zoom}"
+              sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
+              referrerpolicy="${prefs.shield ? 'no-referrer' : 'strict-origin-when-cross-origin'}"
+              title="${escapeHtml(t.title)}"></iframe>
+    </div>
+    <div class="blocked-overlay" id="blocked-overlay" style="display:none">
+      <span class="blocked-icon">${icon('globe')}</span>
+      <h2>This site can’t be displayed in the preview</h2>
+      <p>Most large sites send <code>X-Frame-Options</code> or a CSP <code>frame-ancestors</code> rule that forbids being embedded in a web page. In the desktop build the same page renders natively in an isolated Chromium view, so this limitation does not apply there.</p>
+      <div class="blocked-actions">
+        <button class="btn btn-primary" data-action="open-url-new" data-url="${escapeHtml(t.url)}">${icon('external')} Open in a new tab</button>
+        <button class="btn btn-ghost" data-action="reload">${icon('reload')} Try again</button>
+      </div>
+    </div>`;
+
+  stopLoading();
+
+  const frame = $('#content-frame');
+  let loaded = false;
+  frame.addEventListener('load', () => { loaded = true; });
+  setTimeout(() => {
+    if (!loaded) {
+      const ov = $('#blocked-overlay');
+      if (ov) ov.style.display = 'flex';
+    }
+  }, 3000);
 }
 
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str || '';
-  return div.innerHTML;
+function ctx() {
+  return {
+    prefs,
+    tabs: state.tabs,
+    activeTabId: state.activeTabId,
+    bookmarks: state.bookmarks,
+    shortcuts: state.shortcuts,
+    addresses: state.addresses,
+    cards: state.cards,
+    logins: state.logins,
+    downloads: state.downloads,
+    history: state.history,
+    profile: state.profile,
+    syncEnabled: state.syncEnabled,
+    syncScopes: state.syncScopes,
+    lastSync: state.lastSync,
+    ui: state.ui,
+  };
 }
 
-// ----- Event Handling -----
-function attachEventListeners() {
-  // Tab switching
-  document.querySelectorAll('.tab[data-tab-id]').forEach(el => {
-    el.addEventListener('click', (e) => {
-      if (e.target.closest('.tab-close')) return;
-      activateTab(parseInt(el.dataset.tabId));
-      render();
+/* ------------------------------------------------------------------ */
+/*  Dropdown / popovers / palette / modal / toast                      */
+/* ------------------------------------------------------------------ */
+
+function menuItem(action, label, iconKey, extra = '') {
+  return `<button class="menu-item" data-action="${action}" ${extra}>${icon(iconKey)}<span>${escapeHtml(label)}</span></button>`;
+}
+
+function renderDropdown() {
+  const t = getActiveTab();
+  const zoom = t ? Math.round(t.zoom * 100) : 100;
+  $('#dropdown').innerHTML = `
+    ${menuItem('new-tab', 'New tab', 'plus', 'data-shortcut="Ctrl+T"')}
+    ${menuItem('new-private-tab', 'New private tab', 'incognito')}
+    ${menuItem('new-tor-tab', 'New Tor privacy tab', 'tor')}
+    <div class="menu-sep"></div>
+    ${menuItem('open-panel', 'Bookmarks', 'bookmark', 'data-panel="bookmarks"')}
+    ${menuItem('open-panel', 'History', 'history', 'data-panel="history"')}
+    ${menuItem('open-panel', 'Downloads', 'download', 'data-panel="downloads"')}
+    ${menuItem('open-panel', 'Autofill & passwords', 'key', 'data-panel="autofill"')}
+    ${menuItem('open-panel', 'Your account', 'user', 'data-panel="account"')}
+    <div class="menu-sep"></div>
+    <div class="menu-zoom">
+      <button class="icon-btn sm" data-action="zoom-out" title="Zoom out">${icon('zoomOut')}</button>
+      <button class="zoom-val" data-action="zoom-reset">${zoom}%</button>
+      <button class="icon-btn sm" data-action="zoom-in" title="Zoom in">${icon('zoomIn')}</button>
+    </div>
+    ${menuItem('toggle-pref', prefs.sidebar ? 'Hide sidebar' : 'Show sidebar', 'layout', 'data-pref="sidebar"')}
+    ${menuItem('toggle-pref', prefs.bookmarksBar ? 'Hide bookmarks bar' : 'Show bookmarks bar', 'bookmark', 'data-pref="bookmarksBar"')}
+    ${menuItem('toggle-pref', prefs.verticalTabs ? 'Horizontal tabs' : 'Vertical tabs', 'tabs', 'data-pref="verticalTabs"')}
+    <div class="menu-sep"></div>
+    ${menuItem('open-palette', 'Command palette', 'command', 'data-shortcut="Ctrl+K"')}
+    ${menuItem('open-panel', 'Settings', 'settings', 'data-panel="settings" data-shortcut="Ctrl+,"')}
+    ${menuItem('open-panel', 'About', 'info', 'data-panel="about"')}
+    <div class="menu-sep"></div>
+    ${menuItem('keyboard-help', 'Keyboard shortcuts', 'keyboard')}
+  `;
+}
+
+function renderAppsPopover() {
+  $('#apps-popover').innerHTML = `
+    <div class="popover-head">Google apps</div>
+    <div class="apps-grid small">
+      ${GOOGLE_APPS.map(a => `
+        <button class="app-tile" data-action="open-url-new" data-url="${escapeHtml(a.href)}" title="${escapeHtml(a.name)}">
+          <span class="app-ico" style="--a:${a.color}">${escapeHtml(a.letter)}</span>
+          <span class="app-name">${escapeHtml(a.name)}</span>
+        </button>`).join('')}
+    </div>`;
+}
+
+function openPalette() {
+  const overlay = $('#palette');
+  const commands = [
+    { label: 'New tab', action: 'new-tab', icon: 'plus' },
+    { label: 'New private tab', action: 'new-private-tab', icon: 'incognito' },
+    { label: 'New Tor privacy tab', action: 'new-tor-tab', icon: 'tor' },
+    { label: 'Reopen last closed tab', action: 'reopen-tab', icon: 'refresh' },
+    { label: 'Bookmarks', action: 'open-panel', panel: 'bookmarks', icon: 'bookmark' },
+    { label: 'History', action: 'open-panel', panel: 'history', icon: 'history' },
+    { label: 'Downloads', action: 'open-panel', panel: 'downloads', icon: 'download' },
+    { label: 'Autofill & passwords', action: 'open-panel', panel: 'autofill', icon: 'key' },
+    { label: 'Your account', action: 'open-panel', panel: 'account', icon: 'user' },
+    { label: 'Google apps', action: 'open-panel', panel: 'apps', icon: 'grid' },
+    { label: 'Settings', action: 'open-panel', panel: 'settings', icon: 'settings' },
+    { label: 'Toggle vertical tabs', action: 'toggle-pref', pref: 'verticalTabs', icon: 'layout' },
+    { label: 'Toggle privacy shield', action: 'toggle-pref', pref: 'shield', icon: 'shield' },
+    { label: 'Toggle theme', action: 'cycle-theme', icon: 'palette' },
+    { label: 'Export all data', action: 'data-export', icon: 'download' },
+    { label: 'Zoom in', action: 'zoom-in', icon: 'zoomIn' },
+    { label: 'Zoom out', action: 'zoom-out', icon: 'zoomOut' },
+    { label: 'Reset zoom', action: 'zoom-reset', icon: 'refresh' },
+  ];
+  overlay.innerHTML = `
+    <div class="palette">
+      <div class="palette-input">
+        <span>${icon('command')}</span>
+        <input id="palette-input" placeholder="Type a command or search…" autocomplete="off" />
+      </div>
+      <div class="palette-list" id="palette-list"></div>
+    </div>`;
+  overlay.classList.add('open');
+
+  const list = $('#palette-list');
+  const renderList = (q = '') => {
+    const items = commands.filter(c => c.label.toLowerCase().includes(q.toLowerCase()));
+    list.innerHTML = items.length
+      ? items.map((c, i) => `<button class="palette-item ${i === 0 ? 'sel' : ''}" data-action="${c.action}" ${c.panel ? `data-panel="${c.panel}"` : ''} ${c.pref ? `data-pref="${c.pref}"` : ''}>${icon(c.icon)}<span>${escapeHtml(c.label)}</span></button>`).join('')
+      : `<div class="palette-empty">No matching commands</div>`;
+  };
+  renderList('');
+  const input = $('#palette-input');
+  input.focus();
+  input.addEventListener('input', () => renderList(input.value));
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeOverlays();
+    if (e.key === 'Enter') { const first = list.querySelector('.palette-item'); if (first) first.click(); }
+  });
+}
+
+function closeOverlays() {
+  $('#palette').classList.remove('open');
+  $('#modal').classList.remove('open');
+  $('#dropdown').classList.remove('open');
+  $('#apps-popover').classList.remove('open');
+  closeSuggestions();
+}
+
+function openModal({ title, fields = [], submitLabel = 'Save', onSubmit, danger = false }) {
+  const overlay = $('#modal');
+  overlay.innerHTML = `
+    <div class="modal">
+      <header class="modal-head"><h3>${escapeHtml(title)}</h3>
+        <button class="icon-btn sm" data-action="close-modal">${icon('close')}</button></header>
+      <form class="modal-body" id="modal-form">
+        ${fields.map(f => `
+          <label class="field">
+            <span>${escapeHtml(f.label)}</span>
+            ${f.type === 'select'
+              ? `<select name="${f.name}">${(f.options || []).map(o => `<option value="${escapeHtml(o.value)}" ${o.value === f.value ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}</select>`
+              : `<input name="${f.name}" type="${f.type || 'text'}" value="${escapeHtml(f.value || '')}" placeholder="${escapeHtml(f.placeholder || '')}" ${f.required ? 'required' : ''} />`}
+          </label>`).join('')}
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-action="close-modal">Cancel</button>
+          <button type="submit" class="btn ${danger ? 'btn-danger' : 'btn-primary'}">${escapeHtml(submitLabel)}</button>
+        </div>
+      </form>
+    </div>`;
+  overlay.classList.add('open');
+  const form = $('#modal-form');
+  form.addEventListener('submit', e => {
+    e.preventDefault();
+    const values = {};
+    fields.forEach(f => {
+      const el = form.elements[f.name];
+      if (el) values[f.name] = el.value.trim();
     });
+    onSubmit(values);
+    closeOverlays();
   });
+  const first = form.querySelector('input, select');
+  if (first) first.focus();
+}
 
-  // Tab close
-  document.querySelectorAll('.tab-close[data-close-id]').forEach(el => {
-    el.addEventListener('click', (e) => {
-      e.stopPropagation();
-      closeTab(parseInt(el.dataset.closeId));
-      render();
-    });
+function toast(message, kind = 'info') {
+  const box = $('#toasts');
+  if (!box) return;
+  const el = document.createElement('div');
+  el.className = `toast ${kind}`;
+  el.innerHTML = `${icon(kind === 'error' ? 'info' : 'check')}<span>${escapeHtml(message)}</span>`;
+  box.appendChild(el);
+  setTimeout(() => el.classList.add('show'), 10);
+  setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 250); }, 2600);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Theme                                                             */
+/* ------------------------------------------------------------------ */
+
+function resolveTheme() {
+  if (prefs.theme === 'system') {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  return prefs.theme;
+}
+
+function applyTheme() {
+  document.documentElement.dataset.theme = resolveTheme();
+  document.documentElement.style.setProperty('--accent', prefs.accent);
+  document.documentElement.style.setProperty('--accent-soft', hexToRgba(prefs.accent, 0.14));
+}
+
+function hexToRgba(hex, alpha) {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!m) return `rgba(251,84,43,${alpha})`;
+  const [r, g, b] = [m[1], m[2], m[3]].map(h => parseInt(h, 16));
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Actions                                                           */
+/* ------------------------------------------------------------------ */
+
+const ACTIONS = {
+  'new-tab': () => createTab('standard'),
+  'new-private-tab': () => createTab('private'),
+  'new-tor-tab': () => createTab('tor'),
+  'reopen-tab': reopenClosedTab,
+  'close-tab': el => closeTab(el.dataset.id),
+  'activate-tab': el => activateTab(el.dataset.id),
+  'duplicate-tab': el => duplicateTab(el.dataset.id),
+  'pin-tab': el => togglePin(el.dataset.id),
+  'mute-tab': el => toggleMute(el.dataset.id),
+  'close-tabs-others': el => {
+    state.tabs = state.tabs.filter(t => t.id === el.dataset.id || t.pinned);
+    if (!state.tabs.some(t => t.id === state.activeTabId)) state.activeTabId = state.tabs[0].id;
+    persistSession(); renderAll();
+  },
+
+  back: goBack,
+  forward: goForward,
+  reload: () => reloadContent(true),
+  home: goHome,
+  'zoom-in': () => setZoom(0.1),
+  'zoom-out': () => setZoom(-0.1),
+  'zoom-reset': () => { const t = getActiveTab(); if (t) { t.zoom = 1; renderContent(true); renderDropdown(); } },
+
+  'toggle-star': toggleBookmarkCurrent,
+  'toggle-shield': () => {
+    prefs = store.setPrefs({ shield: !prefs.shield });
+    renderToolbar();
+    const frame = $('#content-frame');
+    if (frame) frame.setAttribute('referrerpolicy', prefs.shield ? 'no-referrer' : 'strict-origin-when-cross-origin');
+    toast(prefs.shield ? 'Privacy shield on' : 'Privacy shield off');
+  },
+
+  'open-panel': el => { state.panel = el.dataset.panel; contentKey = ''; closeOverlays(); renderAll(); },
+  'close-panel': () => { state.panel = null; contentKey = ''; renderAll(); },
+  'open-url': el => { navigate(el.dataset.url); closeOverlays(); },
+  'open-url-new': el => { createTab('standard', el.dataset.url); closeOverlays(); },
+
+  'add-shortcut': () => shortcutModal(),
+  'edit-shortcut': el => shortcutModal(state.shortcuts.find(s => s.id === el.dataset.id)),
+  'delete-shortcut': el => { state.shortcuts = state.shortcuts.filter(s => s.id !== el.dataset.id); store.setList('shortcuts', state.shortcuts); renderContent(true); toast('Shortcut removed'); },
+
+  'bookmark-current': () => { const t = getActiveTab(); if (t && t.url) { addBookmark(t.url, t.title); renderContent(true); } else toast('Open a page first', 'error'); },
+  'bookmark-edit': el => bookmarkEditModal(el.dataset.id),
+  'bookmark-delete': el => { state.bookmarks = state.bookmarks.filter(b => b.id !== el.dataset.id); store.setList('bookmarks', state.bookmarks); renderAll(true); toast('Bookmark removed'); },
+  'bookmarks-open-all': () => { state.bookmarks.forEach(b => createTab('standard', b.url, { activate: false })); state.activeTabId = state.tabs[state.tabs.length - 1].id; persistSession(); renderAll(true); },
+  'bookmarks-export': () => exportJSON('bookmarks.json', { bookmarks: state.bookmarks }),
+  'bookmarks-import': () => importJSON(restored => { state.bookmarks = store.getList('bookmarks', []); renderAll(true); toast(`Imported ${restored.length} section(s)`); }),
+
+  'history-delete': el => { state.history = state.history.filter(h => h.id !== el.dataset.id); persistSession(); renderContent(true); },
+  'history-clear': () => { state.history = []; persistSession(); renderContent(true); toast('History cleared'); },
+
+  'download-remove': el => { state.downloads = state.downloads.filter(d => d.id !== el.dataset.id); store.setList('downloads', state.downloads); renderContent(true); },
+  'downloads-clear': () => { state.downloads = []; store.setList('downloads', state.downloads); renderContent(true); toast('Downloads cleared'); },
+
+  'set-pref': el => { prefs = store.setPrefs({ [el.dataset.pref]: el.dataset.value }); applyTheme(); applyLayout(); renderContent(true); renderDropdown(); if (state.panel === 'settings') renderContent(true); },
+  'toggle-pref': el => {
+    const key = el.dataset.pref;
+    prefs = store.setPrefs({ [key]: !prefs[key] });
+    applyTheme(); applyLayout(); renderToolbar(); renderDropdown();
+    if (state.panel) renderContent(true);
+  },
+  'cycle-theme': () => { const order = ['light', 'dark', 'system']; prefs = store.setPrefs({ theme: order[(order.indexOf(prefs.theme) + 1) % 3] }); applyTheme(); renderDropdown(); if (state.panel === 'settings') renderContent(true); toast(`Theme: ${prefs.theme}`); },
+
+  'clear-browsing-data': () => { store.clearBrowsingData(); state.history = []; state.closedTabs = []; toast('Browsing data cleared'); renderContent(true); },
+  'data-export': () => exportJSON('secure-browser-data.json', store.exportAll()),
+  'data-import': () => importJSON(() => { hydrateFromStore(); renderAll(true); toast('Data imported'); }),
+  'data-wipe': () => openModal({
+    title: 'Reset browser?', submitLabel: 'Reset everything', danger: true,
+    fields: [{ name: 'confirm', label: 'Type RESET to confirm', placeholder: 'RESET', required: true }],
+    onSubmit: v => {
+      if (v.confirm !== 'RESET') { toast('Type RESET to confirm', 'error'); return; }
+      store.wipeAll();
+      state.bookmarks = []; state.shortcuts = DEFAULT_SHORTCUTS.map(s => ({ ...s }));
+      state.addresses = []; state.cards = []; state.logins = []; state.downloads = [];
+      state.profile = null; state.history = []; state.closedTabs = [];
+      prefs = store.getPrefs(); applyTheme(); applyLayout(); renderAll(true);
+      toast('Browser reset');
+    },
+  }),
+
+  'autofill-export': () => exportJSON('autofill.json', { addresses: state.addresses, cards: state.cards, logins: state.logins }),
+  'autofill-edit': el => autofillModal(el.dataset.kind, state[el.dataset.kind].find(x => x.id === el.dataset.id)),
+  'autofill-delete': el => { const k = el.dataset.kind; state[k] = state[k].filter(x => x.id !== el.dataset.id); store.setList(k, state[k]); renderContent(true); toast('Entry removed'); },
+  'address-add': () => autofillModal('addresses'),
+  'card-add': () => autofillModal('cards'),
+  'login-add': () => autofillModal('logins'),
+  'login-reveal': el => {
+    const l = state.logins.find(x => x.id === el.dataset.id);
+    if (l) toast(`${l.site} — ${l.username} / ${l.password}`);
+  },
+
+  'account-signout': () => { state.profile = null; store.setList('profile', null); state.syncEnabled = false; renderAll(true); toast('Signed out'); },
+  'toggle-sync': el => { const s = el.dataset.scope; state.syncScopes[s] = !state.syncScopes[s]; renderContent(true); },
+  'sync-now': () => { state.lastSync = new Date().toLocaleTimeString(); toast('Everything is up to date'); renderContent(true); },
+
+  'open-palette': () => openPalette(),
+  'close-modal': () => closeOverlays(),
+  'keyboard-help': () => openModal({ title: 'Keyboard shortcuts', fields: [], submitLabel: 'Got it', onSubmit: () => {} }),
+};
+
+function setZoom(delta) {
+  const t = getActiveTab();
+  if (!t || !t.url) { toast('Open a page to zoom', 'error'); return; }
+  t.zoom = Math.min(2.5, Math.max(0.5, Math.round((t.zoom + delta) * 10) / 10));
+  renderContent(true);
+  renderDropdown();
+}
+
+function toggleBookmarkCurrent() {
+  const t = getActiveTab();
+  if (!t || !t.url) { toast('Open a page to bookmark it', 'error'); return; }
+  const existing = state.bookmarks.find(b => b.url === t.url);
+  if (existing) {
+    state.bookmarks = state.bookmarks.filter(b => b.url !== t.url);
+    toast('Bookmark removed');
+  } else {
+    addBookmark(t.url, t.title);
+    toast('Bookmark added');
+  }
+  store.setList('bookmarks', state.bookmarks);
+  renderToolbar();
+  renderBookmarksBar();
+  if (state.panel === 'bookmarks') renderContent(true);
+}
+
+function addBookmark(url, title) {
+  state.bookmarks.unshift({ id: uid('b'), url, title: title || hostOf(url), color: faviconColor(hostOf(url)), at: Date.now() });
+  store.setList('bookmarks', state.bookmarks);
+}
+
+function shortcutModal(existing) {
+  openModal({
+    title: existing ? 'Edit shortcut' : 'Add shortcut',
+    submitLabel: existing ? 'Save' : 'Add',
+    fields: [
+      { name: 'title', label: 'Name', value: existing?.title || '', placeholder: 'GitHub', required: true },
+      { name: 'url', label: 'URL', value: existing?.url || '', placeholder: 'https://github.com', required: true },
+      { name: 'color', label: 'Colour', type: 'select', value: existing?.color || '#4285f4', options: ACCENTS.map(c => ({ value: c, label: c })) },
+    ],
+    onSubmit: v => {
+      const url = normalizeInput(v.url, prefs.searchEngine);
+      if (existing) {
+        Object.assign(existing, { title: v.title, url, color: v.color });
+      } else {
+        state.shortcuts.push({ id: uid('s'), title: v.title, url, color: v.color });
+      }
+      store.setList('shortcuts', state.shortcuts);
+      renderContent(true);
+      toast(existing ? 'Shortcut updated' : 'Shortcut added');
+    },
   });
+}
 
-  // New tab
-  document.getElementById('new-tab-btn').addEventListener('click', () => {
-    const active = getActiveTab();
-    createTab(active ? active.mode : 'standard');
-    render();
+function bookmarkEditModal(id) {
+  const b = state.bookmarks.find(x => x.id === id);
+  if (!b) return;
+  openModal({
+    title: 'Edit bookmark',
+    fields: [
+      { name: 'title', label: 'Name', value: b.title, required: true },
+      { name: 'url', label: 'URL', value: b.url, required: true },
+    ],
+    onSubmit: v => {
+      Object.assign(b, { title: v.title, url: normalizeInput(v.url, prefs.searchEngine) });
+      store.setList('bookmarks', state.bookmarks);
+      renderAll(true);
+      toast('Bookmark updated');
+    },
   });
+}
 
-  // Navigation buttons
-  document.getElementById('back-btn').addEventListener('click', goBack);
-  document.getElementById('fwd-btn').addEventListener('click', goForward);
-  document.getElementById('reload-btn').addEventListener('click', reload);
-  document.getElementById('home-btn').addEventListener('click', goHome);
+const AUTOFILL_FIELDS = {
+  addresses: [
+    { name: 'name', label: 'Full name', placeholder: 'Ada Lovelace' },
+    { name: 'email', label: 'Email', placeholder: 'ada@example.com' },
+    { name: 'line1', label: 'Address', placeholder: '12 Analytical Way' },
+    { name: 'city', label: 'City', placeholder: 'London' },
+    { name: 'postal', label: 'Postal code', placeholder: 'N1 9AB' },
+    { name: 'country', label: 'Country', placeholder: 'United Kingdom' },
+  ],
+  cards: [
+    { name: 'name', label: 'Cardholder', placeholder: 'Ada Lovelace' },
+    { name: 'last4', label: 'Last 4 digits', placeholder: '4242' },
+    { name: 'expiry', label: 'Expiry (MM/YY)', placeholder: '08/29' },
+  ],
+  logins: [
+    { name: 'site', label: 'Site', placeholder: 'github.com' },
+    { name: 'username', label: 'Username', placeholder: 'ada' },
+    { name: 'password', label: 'Password', type: 'password', placeholder: '••••••••' },
+  ],
+};
 
-  // Address bar
-  const urlInput = document.getElementById('url-input');
-  urlInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      navigateTo(urlInput.value);
-      render();
+function autofillModal(kind, existing) {
+  openModal({
+    title: existing ? 'Edit entry' : 'Add entry',
+    submitLabel: existing ? 'Save' : 'Add',
+    fields: AUTOFILL_FIELDS[kind].map(f => ({ ...f, value: existing?.[f.name] || '' })),
+    onSubmit: v => {
+      if (existing) Object.assign(existing, v);
+      else state[kind].unshift({ id: uid(kind[0]), ...v });
+      store.setList(kind, state[kind]);
+      renderContent(true);
+      toast(existing ? 'Entry updated' : 'Entry added');
+    },
+  });
+}
+
+function signIn(values) {
+  state.profile = { name: values.name, email: values.email, at: Date.now() };
+  store.setList('profile', state.profile);
+  state.syncEnabled = true;
+  state.lastSync = new Date().toLocaleTimeString();
+  renderAll(true);
+  toast(`Signed in as ${values.name}`);
+}
+
+/* ---------------------- file import / export ---------------------- */
+
+function exportJSON(filename, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast('Exported ' + filename);
+}
+
+function importJSON(onDone) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json,.json';
+  input.addEventListener('change', () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const obj = JSON.parse(String(reader.result));
+        const restored = store.importAll(obj);
+        hydrateFromStore();
+        onDone(restored);
+      } catch (err) {
+        toast('Could not read that file', 'error');
+      }
+    };
+    reader.readAsText(file);
+  });
+  input.click();
+}
+
+function hydrateFromStore() {
+  prefs = store.getPrefs();
+  state.bookmarks = store.getList('bookmarks', []);
+  state.shortcuts = store.getList('shortcuts', null) || DEFAULT_SHORTCUTS.map(s => ({ ...s }));
+  state.addresses = store.getList('addresses', []);
+  state.cards = store.getList('cards', []);
+  state.logins = store.getList('logins', []);
+  state.downloads = store.getList('downloads', []);
+  state.profile = store.getList('profile', null);
+  state.syncEnabled = !!state.profile;
+  applyTheme();
+}
+
+/* ------------------------------------------------------------------ */
+/*  Event wiring                                                      */
+/* ------------------------------------------------------------------ */
+
+function attachStaticListeners() {
+  // Global action delegation
+  document.addEventListener('click', e => {
+    const el = e.target.closest('[data-action]');
+    if (el && ACTIONS[el.dataset.action]) {
+      e.preventDefault();
+      ACTIONS[el.dataset.action](el, e);
+      return;
+    }
+    const sug = e.target.closest('[data-suggest]');
+    if (sug) {
+      const s = state.suggestions[Number(sug.dataset.suggest)];
+      if (s) { navigate(s.url); closeSuggestions(); }
+      return;
+    }
+    const tab = e.target.closest('.tab[data-tab-id]');
+    if (tab) {
+      if (e.target.closest('.tab-close')) { closeTab(e.target.closest('.tab-close').dataset.close); return; }
+      activateTab(tab.dataset.tabId);
     }
   });
 
-  // Speed dial shortcuts
-  document.querySelectorAll('.dial-tile[data-url]').forEach(el => {
-    el.addEventListener('click', (e) => {
+  // Omnibox
+  const input = $('#url-input');
+  input.addEventListener('focus', () => { input.select(); openSuggestions(input.value); });
+  input.addEventListener('input', () => openSuggestions(input.value));
+  input.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown' && state.suggestions.length) {
       e.preventDefault();
-      navigateTo(el.dataset.url);
-      render();
-    });
+      state.suggestIndex = Math.min(state.suggestIndex + 1, state.suggestions.length - 1);
+      renderSuggestions();
+    } else if (e.key === 'ArrowUp' && state.suggestions.length) {
+      e.preventDefault();
+      state.suggestIndex = Math.max(state.suggestIndex - 1, -1);
+      renderSuggestions();
+    } else if (e.key === 'Enter') {
+      const pick = state.suggestIndex >= 0 ? state.suggestions[state.suggestIndex] : null;
+      const target = pick ? pick.url : input.value;
+      input.blur();               // drop focus first so the omnibox re-renders with the resolved URL
+      if (e.altKey) { createTab('standard', normalizeInput(target, prefs.searchEngine)); }
+      else { navigate(target); }
+      closeSuggestions();
+    } else if (e.key === 'Escape') {
+      closeSuggestions();
+      input.value = omniboxValue();
+      input.blur();
+    }
+  });
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.omnibox-wrap')) closeSuggestions();
+    if (!e.target.closest('#dropdown') && !e.target.closest('#menu-btn')) $('#dropdown').classList.remove('open');
+    if (!e.target.closest('#apps-popover') && !e.target.closest('#apps-btn')) $('#apps-popover').classList.remove('open');
+    if (e.target.classList.contains('overlay')) closeOverlays();
   });
 
-  // Sidebar rail
-  document.getElementById('rail-home').addEventListener('click', goHome);
-  document.getElementById('rail-tor').addEventListener('click', () => {
-    createTab('tor');
-    render();
+  $('#menu-btn').addEventListener('click', e => { e.stopPropagation(); $('#apps-popover').classList.remove('open'); $('#dropdown').classList.toggle('open'); });
+  $('#apps-btn').addEventListener('click', e => { e.stopPropagation(); $('#dropdown').classList.remove('open'); $('#apps-popover').classList.toggle('open'); });
+  $('#profile-btn').addEventListener('click', () => { state.panel = state.profile ? 'account' : 'account'; contentKey = ''; closeOverlays(); renderAll(); });
+  $('#vtabs-toggle').addEventListener('click', () => { prefs = store.setPrefs({ verticalTabs: !prefs.verticalTabs }); applyLayout(); renderTabs(); renderDropdown(); });
+
+  // New tab button lives inside the tab strip (re-rendered), so delegate:
+  document.addEventListener('click', e => {
+    if (e.target.closest('#new-tab-btn')) createTab('standard');
+  }, true);
+
+  // Tab drag reordering
+  let dragId = null;
+  document.addEventListener('dragstart', e => {
+    const tab = e.target.closest('.tab[data-tab-id]');
+    if (tab) { dragId = tab.dataset.tabId; tab.classList.add('dragging'); }
   });
-  document.getElementById('rail-menu').addEventListener('click', (e) => {
-    e.stopPropagation();
-    toggleMenu();
+  document.addEventListener('dragover', e => {
+    if (dragId && e.target.closest('.tab[data-tab-id]')) e.preventDefault();
+  });
+  document.addEventListener('drop', e => {
+    const over = e.target.closest('.tab[data-tab-id]');
+    if (!dragId || !over || over.dataset.tabId === dragId) return;
+    e.preventDefault();
+    const from = state.tabs.findIndex(t => t.id === dragId);
+    const to = state.tabs.findIndex(t => t.id === over.dataset.tabId);
+    if (from === -1 || to === -1) return;
+    const [moved] = state.tabs.splice(from, 1);
+    state.tabs.splice(to, 0, moved);
+    dragId = null;
+    persistSession();
+    renderTabs();
+  });
+  document.addEventListener('dragend', () => { dragId = null; $$('.tab.dragging').forEach(t => t.classList.remove('dragging')); });
+
+  // Tab context menu
+  document.addEventListener('contextmenu', e => {
+    const tab = e.target.closest('.tab[data-tab-id]');
+    if (tab) { e.preventDefault(); showTabMenu(tab.dataset.tabId, e.clientX, e.clientY); return; }
+    e.preventDefault();
+    showPageMenu(e.clientX, e.clientY);
   });
 
-  // Menu
-  const menuBtn = document.getElementById('menu-btn');
-  const dropdown = document.getElementById('dropdown');
-  menuBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    dropdown.classList.toggle('open');
+  // Selects & inputs inside panels
+  document.addEventListener('change', e => {
+    const sel = e.target.closest('select[data-action="set-pref-select"]');
+    if (sel) {
+      const val = sel.dataset.pref === 'wallpaper' ? Number(sel.value) : sel.value;
+      prefs = store.setPrefs({ [sel.dataset.pref]: val });
+      applyTheme(); renderToolbar(); renderContent(true); renderDropdown();
+    }
   });
-  document.addEventListener('click', () => dropdown.classList.remove('open'));
+  document.addEventListener('input', e => {
+    const inp = e.target.closest('[data-input="history-search"]');
+    if (inp) { state.ui.historyQuery = inp.value; renderContent(true); const again = $('#history-search'); if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); } }
+  });
 
-  // Menu items
-  document.getElementById('menu-new-standard').addEventListener('click', () => {
-    createTab('standard');
-    render();
-  });
-  document.getElementById('menu-new-tor').addEventListener('click', () => {
-    createTab('tor');
-    render();
-  });
-  document.getElementById('menu-devtools').addEventListener('click', () => {
-    // In Electron, this toggles DevTools via IPC. In web preview, show a note.
-    alert('DevTools: In the Electron app, press F12 or Ctrl+Shift+I to toggle DevTools for the active webContents.\n\nIn the web preview, use your browser\'s DevTools (F12).');
-  });
-  document.getElementById('menu-inspect').addEventListener('click', () => {
-    alert('Inspect Element: In the Electron app, right-click any element and select "Inspect Element" to open DevTools at that position.');
-  });
-  document.getElementById('menu-clear').addEventListener('click', () => {
-    sessionStorage.clear();
-    state = { tabs: [], activeTabId: null };
-    nextTabId = 1;
-    createTab('standard');
-    render();
+  // New tab page search
+  document.addEventListener('submit', e => {
+    if (e.target.id === 'ntp-search-form') {
+      e.preventDefault();
+      const q = $('#ntp-search').value;
+      if (q.trim()) navigate(q);
+    }
+    if (e.target.id === 'signin-form') {
+      e.preventDefault();
+      const name = e.target.elements.name.value.trim();
+      const email = e.target.elements.email.value.trim();
+      if (name && email) signIn({ name, email });
+    }
   });
 
   // Keyboard shortcuts
-  document.addEventListener('keydown', handleKeyboardShortcuts);
+  document.addEventListener('keydown', handleKeys);
 
-  // Detect blocked iframe
-  const frame = document.getElementById('content-frame');
-  if (frame) {
-    let loaded = false;
-    frame.addEventListener('load', () => { loaded = true; });
-    setTimeout(() => {
-      if (!loaded) {
-        const overlay = document.getElementById('blocked-overlay');
-        if (overlay) overlay.style.display = 'flex';
-      }
-    }, 3000);
-  }
+  // React to OS theme changes when following the system
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (prefs.theme === 'system') applyTheme(); });
 }
 
-function handleKeyboardShortcuts(e) {
-  // F12 or Ctrl+Shift+I — toggle DevTools
-  if (e.key === 'F12' || (e.ctrlKey && e.shiftKey && e.key === 'I')) {
-    e.preventDefault();
-    alert('DevTools: In the Electron app, this toggles Chromium DevTools for the active webContents.');
-  }
-  // Ctrl+T — new tab
-  if (e.ctrlKey && e.key === 't') {
-    e.preventDefault();
-    const active = getActiveTab();
-    createTab(active ? active.mode : 'standard');
-    render();
-  }
-  // Ctrl+W — close tab
-  if (e.ctrlKey && e.key === 'w') {
-    e.preventDefault();
-    if (state.activeTabId) {
-      closeTab(state.activeTabId);
-      render();
-    }
-  }
+function handleKeys(e) {
+  const mod = e.ctrlKey || e.metaKey;
+  const key = e.key.toLowerCase();
+
+  if (key === 'escape') { closeOverlays(); return; }
+
+  if (mod && key === 'l') { e.preventDefault(); $('#url-input').focus(); return; }
+  if (mod && key === 'k') { e.preventDefault(); openPalette(); return; }
+  if (mod && key === 't' && e.shiftKey) { e.preventDefault(); reopenClosedTab(); return; }
+  if (mod && key === 't') { e.preventDefault(); createTab('standard'); return; }
+  if (mod && key === 'w') { e.preventDefault(); if (state.activeTabId) closeTab(state.activeTabId); return; }
+  if (mod && key === 'r') { e.preventDefault(); reloadContent(true); return; }
+  if (mod && key === 'j') { e.preventDefault(); state.panel = 'downloads'; contentKey = ''; renderAll(); return; }
+  if (mod && key === 'h') { e.preventDefault(); state.panel = 'history'; contentKey = ''; renderAll(); return; }
+  if (mod && key === 'b') { e.preventDefault(); state.panel = 'bookmarks'; contentKey = ''; renderAll(); return; }
+  if (mod && key === 'n' && e.shiftKey) { e.preventDefault(); createTab('tor'); return; }
+  if (mod && key === 'n') { e.preventDefault(); createTab('private'); return; }
+  if (mod && key === ',') { e.preventDefault(); state.panel = 'settings'; contentKey = ''; renderAll(); return; }
+  if (mod && (key === '=' || key === '+')) { e.preventDefault(); setZoom(0.1); return; }
+  if (mod && key === '-') { e.preventDefault(); setZoom(-0.1); return; }
+  if (mod && key === '0') { e.preventDefault(); ACTIONS['zoom-reset'](); return; }
+  if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); goBack(); return; }
+  if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); goForward(); return; }
+  if (e.key === 'F5') { e.preventDefault(); reloadContent(true); }
 }
 
-// ----- Context Menu (right-click) -----
-document.addEventListener('contextmenu', (e) => {
-  e.preventDefault();
-  // In Electron, this would call webContents.inspectElement(x, y)
-  // In web preview, we show a custom context menu
-  showContextMenu(e.clientX, e.clientY);
-});
+/* ----------------------------- menus ------------------------------ */
 
-function showContextMenu(x, y) {
-  // Remove any existing context menu
-  const existing = document.getElementById('context-menu');
+function showMenu(items, x, y) {
+  const existing = $('#context-menu');
   if (existing) existing.remove();
-
   const menu = document.createElement('div');
   menu.id = 'context-menu';
   menu.className = 'context-menu';
   menu.style.top = `${y}px`;
   menu.style.left = `${x}px`;
-  menu.innerHTML = `
-    <div class="dropdown-item" id="ctx-back">${ICONS.back}<span>Back</span></div>
-    <div class="dropdown-item" id="ctx-forward">${ICONS.forward}<span>Forward</span></div>
-    <div class="dropdown-item" id="ctx-reload">${ICONS.reload}<span>Reload</span></div>
-    <div class="dropdown-separator"></div>
-    <div class="dropdown-item" id="ctx-inspect">${ICONS.search}<span>Inspect Element</span></div>
-    <div class="dropdown-separator"></div>
-    <div class="dropdown-item" id="ctx-newtab">${ICONS.plus}<span>New Tab</span></div>
-  `;
+  menu.innerHTML = items === 'separator'
+    ? ''
+    : items.map(i => i === '-' ? '<div class="menu-sep"></div>' : `<button class="menu-item" data-action="${i.action}" ${i.id ? `data-id="${i.id}"` : ''} ${i.panel ? `data-panel="${i.panel}"` : ''} ${i.pref ? `data-pref="${i.pref}"` : ''}>${icon(i.icon)}<span>${escapeHtml(i.label)}</span></button>`).join('');
   document.body.appendChild(menu);
-
-  document.getElementById('ctx-back').addEventListener('click', () => { goBack(); render(); menu.remove(); });
-  document.getElementById('ctx-forward').addEventListener('click', () => { goForward(); render(); menu.remove(); });
-  document.getElementById('ctx-reload').addEventListener('click', () => { reload(); menu.remove(); });
-  document.getElementById('ctx-inspect').addEventListener('click', () => {
-    menu.remove();
-    alert('Inspect Element: In the Electron app, this opens DevTools at position (' + x + ', ' + y + ') via webContents.inspectElement().');
-  });
-  document.getElementById('ctx-newtab').addEventListener('click', () => {
-    const active = getActiveTab();
-    createTab(active ? active.mode : 'standard');
-    render();
-    menu.remove();
-  });
-
-  // Close on click elsewhere
-  setTimeout(() => {
-    document.addEventListener('click', () => menu.remove(), { once: true });
-  }, 0);
+  const rect = menu.getBoundingClientRect();
+  if (rect.right > window.innerWidth) menu.style.left = `${window.innerWidth - rect.width - 8}px`;
+  if (rect.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - rect.height - 8}px`;
+  const close = e => {
+    if (!e.target.closest('#context-menu')) { menu.remove(); document.removeEventListener('click', close, true); }
+  };
+  setTimeout(() => document.addEventListener('click', close, true), 0);
 }
 
-// ----- Init -----
-function init() {
-  if (!loadState()) {
+function showTabMenu(id, x, y) {
+  const t = state.tabs.find(v => v.id === id);
+  if (!t) return;
+  const items = [
+    { action: 'duplicate-tab', id, label: 'Duplicate', icon: 'copy' },
+    { action: 'pin-tab', id, label: t.pinned ? 'Unpin tab' : 'Pin tab', icon: 'pin' },
+    { action: 'mute-tab', id, label: t.muted ? 'Unmute site' : 'Mute site', icon: t.muted ? 'volume' : 'mute' },
+    { action: 'reload', label: 'Reload', icon: 'reload' },
+    '-',
+    { action: 'toggle-star', label: 'Bookmark this page', icon: 'star' },
+    { action: 'new-tab', label: 'New tab to the right', icon: 'plus' },
+    '-',
+    { action: 'close-tab', id, label: 'Close tab', icon: 'close' },
+    { action: 'close-tabs-others', id, label: 'Close other tabs', icon: 'close' },
+  ];
+  showMenu(items, x, y);
+}
+
+function showPageMenu(x, y) {
+  const items = [
+    { action: 'back', label: 'Back', icon: 'back' },
+    { action: 'forward', label: 'Forward', icon: 'forward' },
+    { action: 'reload', label: 'Reload', icon: 'reload' },
+    '-',
+    { action: 'toggle-star', label: 'Bookmark this page', icon: 'star' },
+    { action: 'open-url-new', label: 'Open address in new tab', icon: 'external' },
+    '-',
+    { action: 'zoom-in', label: 'Zoom in', icon: 'zoomIn' },
+    { action: 'zoom-out', label: 'Zoom out', icon: 'zoomOut' },
+    { action: 'zoom-reset', label: 'Reset zoom', icon: 'refresh' },
+    '-',
+    { action: 'open-panel', panel: 'settings', label: 'Settings', icon: 'settings' },
+    { action: 'open-panel', panel: 'about', label: 'About', icon: 'info' },
+  ];
+  showMenu(items, x, y);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Boot                                                              */
+/* ------------------------------------------------------------------ */
+
+function boot() {
+  ensureShell();
+  applyTheme();
+
+  if (!state.tabs.length) {
     createTab('standard');
+  } else {
+    if (!state.tabs.some(t => t.id === state.activeTabId)) state.activeTabId = state.tabs[0].id;
+    renderAll();
   }
-  render();
+
+  persistSession();
+
+  // Keep the status/omnibox honest as time passes
+  setInterval(() => { if (state.panel === 'history') renderContent(true); }, 60000);
 }
 
-init();
+boot();
