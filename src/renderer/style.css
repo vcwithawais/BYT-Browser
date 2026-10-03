@@ -1,0 +1,424 @@
+/* ===== Reset & Base ===== */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg: #1a1a2e;
+  --bg-light: #16213e;
+  --bg-tab: #0f3460;
+  --bg-tab-active: #1a1a2e;
+  --accent: #e94560;
+  --accent-tor: #7b2cbf;
+  --text: #eee;
+  --text-dim: #8a8a9a;
+  --border: #2a2a4a;
+  --radius: 8px;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ===== Tab Bar ===== */
+.tab-bar {
+  display: flex;
+  align-items: center;
+  background: var(--bg-light);
+  padding: 6px 8px 0 8px;
+  gap: 4px;
+  min-height: 40px;
+  flex-shrink: 0;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-tab);
+  padding: 8px 14px;
+  border-radius: var(--radius) var(--radius) 0 0;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+  max-width: 200px;
+  transition: background 0.15s;
+  border: 1px solid transparent;
+}
+
+.tab:hover {
+  background: #1a4a7a;
+}
+
+.tab.active {
+  background: var(--bg-tab-active);
+  border-color: var(--border);
+  border-bottom-color: var(--bg-tab-active);
+}
+
+.tab.tor-mode.active {
+  border-top: 2px solid var(--accent-tor);
+}
+
+.tab.standard-mode.active {
+  border-top: 2px solid var(--accent);
+}
+
+.tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 14px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+
+.tab-close:hover {
+  background: var(--accent);
+  color: white;
+}
+
+.tab-new {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 18px;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.tab-new:hover {
+  background: var(--bg-tab);
+}
+
+/* ===== Toolbar ===== */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.nav-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 16px;
+  transition: background 0.15s;
+}
+
+.nav-btn:hover {
+  background: var(--bg-tab);
+}
+
+.nav-btn:disabled {
+  color: var(--text-dim);
+  cursor: default;
+  opacity: 0.5;
+}
+
+.nav-btn:disabled:hover {
+  background: transparent;
+}
+
+.address-bar {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  background: var(--bg-light);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 0 14px;
+  height: 36px;
+  transition: border-color 0.15s;
+}
+
+.address-bar:focus-within {
+  border-color: var(--accent);
+}
+
+.address-bar.tor:focus-within {
+  border-color: var(--accent-tor);
+}
+
+.address-bar input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 14px;
+  height: 100%;
+}
+
+.address-bar input::placeholder {
+  color: var(--text-dim);
+}
+
+.security-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+  padding-right: 8px;
+  flex-shrink: 0;
+}
+
+.security-indicator.tor {
+  color: var(--accent-tor);
+}
+
+.menu-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 18px;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.menu-btn:hover {
+  background: var(--bg-tab);
+}
+
+/* ===== Mode Badge ===== */
+.mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.mode-badge.standard {
+  background: rgba(233, 69, 96, 0.2);
+  color: var(--accent);
+}
+
+.mode-badge.tor {
+  background: rgba(123, 44, 191, 0.25);
+  color: #c77dff;
+}
+
+/* ===== Content Area ===== */
+.content-area {
+  flex: 1;
+  position: relative;
+  background: white;
+  overflow: hidden;
+}
+
+.content-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: white;
+}
+
+/* ===== New Tab Page ===== */
+.new-tab-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  gap: 24px;
+}
+
+.new-tab-page h1 {
+  font-size: 32px;
+  font-weight: 300;
+  letter-spacing: 2px;
+}
+
+.new-tab-page .logo {
+  font-size: 56px;
+}
+
+.new-tab-page .shortcuts {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 600px;
+}
+
+.shortcut {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 24px;
+  background: var(--bg-light);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.15s;
+  text-decoration: none;
+  color: var(--text);
+}
+
+.shortcut:hover {
+  background: var(--bg-tab);
+}
+
+.shortcut-icon {
+  font-size: 28px;
+}
+
+.shortcut-label {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ===== Dropdown Menu ===== */
+.dropdown {
+  position: absolute;
+  top: 76px;
+  right: 12px;
+  background: var(--bg-light);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: 8px 0;
+  min-width: 220px;
+  z-index: 1000;
+  display: none;
+}
+
+.dropdown.open {
+  display: block;
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text);
+  transition: background 0.15s;
+}
+
+.dropdown-item:hover {
+  background: var(--bg-tab);
+}
+
+.dropdown-item.active {
+  color: var(--accent);
+}
+
+.dropdown-separator {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+/* ===== Tor Status Bar ===== */
+.tor-status {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  background: rgba(123, 44, 191, 0.15);
+  border-top: 1px solid var(--accent-tor);
+  font-size: 12px;
+  color: #c77dff;
+  flex-shrink: 0;
+}
+
+.tor-status.visible {
+  display: flex;
+}
+
+.tor-status .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c77dff;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* ===== Blocked Content Overlay ===== */
+.blocked-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  color: var(--text);
+  gap: 12px;
+  text-align: center;
+  padding: 40px;
+}
+
+.blocked-overlay h2 {
+  font-size: 20px;
+  font-weight: 400;
+}
+
+.blocked-overlay p {
+  color: var(--text-dim);
+  font-size: 14px;
+  max-width: 400px;
+  line-height: 1.6;
+}
+
+.blocked-overlay .icon {
+  font-size: 48px;
+  opacity: 0.5;
+}
