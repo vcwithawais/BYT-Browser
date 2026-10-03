@@ -13,6 +13,25 @@ let state = {
 
 let nextTabId = 1;
 
+// ----- Icon set (inline SVG — Chromium-family look) -----
+const ICONS = {
+  back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>',
+  forward: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>',
+  reload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L21 10"/></svg>',
+  home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>',
+  menu: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>',
+  close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>',
+  shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6l7-3z"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10.5" width="15" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg>',
+  globe: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5a13 13 0 0 1 0 17 13 13 0 0 1 0-17z"/></svg>',
+  tor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 0 1 9 9"/><path d="M12 7a5 5 0 0 1 5 5"/><path d="M12 11.5a.5.5 0 0 1 .5.5"/><path d="M12 21a9 9 0 0 1-9-9"/><path d="M12 17a5 5 0 0 1-5-5"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
+  code: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 9 5.5 12l3 3"/><path d="M15.5 9l3 3-3 3"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9.5 7V5h5v2"/><path d="M6.5 7l1 13h9l1-13"/></svg>',
+  star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8L12 17l-5.3 2.6 1-5.8L3.5 9.7l5.9-.9L12 3.5z"/></svg>'
+};
+
 // ----- Persistence (session-only, cleared on close) -----
 // Per spec: strictly stateless. We use sessionStorage so nothing survives a restart.
 function saveState() {
@@ -139,6 +158,21 @@ function reload() {
   render();
 }
 
+function goHome() {
+  const tab = getActiveTab();
+  if (tab) {
+    tab.url = '';
+    tab.title = 'New Tab';
+    saveState();
+    render();
+  }
+}
+
+function toggleMenu() {
+  const dropdown = document.getElementById('dropdown');
+  if (dropdown) dropdown.classList.toggle('open');
+}
+
 // ----- Rendering -----
 const app = document.getElementById('app');
 
@@ -147,64 +181,85 @@ function render() {
   if (!tab) return;
 
   app.innerHTML = `
-    <!-- Tab Bar -->
-    <div class="tab-bar">
-      ${state.tabs.map(t => `
-        <div class="tab ${t.id === state.activeTabId ? 'active' : ''} ${t.mode}-mode"
-             data-tab-id="${t.id}">
-          ${t.mode === 'tor' ? '<span style="font-size:11px">🧅</span>' : ''}
-          <span class="tab-title">${escapeHtml(t.title)}</span>
-          <span class="tab-close" data-close-id="${t.id}">×</span>
-        </div>
-      `).join('')}
-      <button class="tab-new" id="new-tab-btn" title="New Tab">+</button>
-    </div>
+    <!-- Tab strip -->
+    <header class="title-bar">
+      <div class="tab-strip">
+        ${state.tabs.map(t => `
+          <div class="tab ${t.id === state.activeTabId ? 'active' : ''} ${t.mode}-mode"
+               data-tab-id="${t.id}" title="${escapeHtml(t.title)}">
+            <span class="tab-favicon ${t.mode}">${t.mode === 'tor' ? ICONS.tor : ICONS.globe}</span>
+            <span class="tab-title">${escapeHtml(t.title)}</span>
+            <span class="tab-close" data-close-id="${t.id}" title="Close tab">${ICONS.close}</span>
+          </div>
+        `).join('')}
+        <button class="tab-new" id="new-tab-btn" title="New tab">${ICONS.plus}</button>
+      </div>
+    </header>
 
     <!-- Toolbar -->
     <div class="toolbar">
-      <button class="nav-btn" id="back-btn" ${!tab.canGoBack ? 'disabled' : ''} title="Back">←</button>
-      <button class="nav-btn" id="fwd-btn" ${!tab.canGoForward ? 'disabled' : ''} title="Forward">→</button>
-      <button class="nav-btn" id="reload-btn" title="Reload">⟳</button>
-      <button class="nav-btn" id="home-btn" title="Home">⌂</button>
-      <div class="address-bar ${tab.mode}">
-        <span class="security-indicator ${tab.mode}">
-          ${tab.mode === 'tor' ? '🧅 TOR' : (tab.url && tab.url.startsWith('https') ? '🔒' : '⚠')}
+      <div class="nav-group">
+        <button class="icon-btn" id="back-btn" title="Back" ${!tab.canGoBack ? 'disabled' : ''}>${ICONS.back}</button>
+        <button class="icon-btn" id="fwd-btn" title="Forward" ${!tab.canGoForward ? 'disabled' : ''}>${ICONS.forward}</button>
+        <button class="icon-btn" id="reload-btn" title="Reload">${ICONS.reload}</button>
+        <button class="icon-btn" id="home-btn" title="Home">${ICONS.home}</button>
+      </div>
+
+      <div class="omnibox ${tab.mode}">
+        <span class="security-indicator ${tab.mode}"
+              title="${tab.mode === 'tor' ? 'Tor routing active — DNS proxied' : 'Connection security'}">
+          ${tab.mode === 'tor' ? ICONS.tor : (tab.url && tab.url.startsWith('https') ? ICONS.lock : ICONS.globe)}
         </span>
         <input type="text" id="url-input" placeholder="Search or enter address"
-               value="${escapeHtml(tab.url || '')}" />
+               value="${escapeHtml(tab.url || '')}" spellcheck="false" autocomplete="off" />
+        <span class="omnibox-trailing" title="${tab.mode === 'tor' ? 'Privacy shield: Tor' : 'Privacy shield: on'}">
+          <span class="shield ${tab.mode}">${ICONS.shield}</span>
+        </span>
       </div>
-      <button class="menu-btn" id="menu-btn" title="Menu">☰</button>
+
+      <div class="tool-group">
+        <button class="icon-btn" id="menu-btn" title="Menu">${ICONS.menu}</button>
+      </div>
     </div>
 
-    <!-- Content Area -->
-    <div class="content-area" id="content-area">
-      ${renderContent(tab)}
+    <!-- Body: sidebar + content -->
+    <div class="browser-body">
+      <nav class="sidebar" aria-label="Sidebar">
+        <button class="rail-btn" id="rail-home" title="Home">${ICONS.home}</button>
+        <button class="rail-btn" id="rail-tor" title="Tor privacy tab">${ICONS.tor}</button>
+        <span class="rail-divider"></span>
+        <button class="rail-btn" id="rail-menu" title="Menu">${ICONS.menu}</button>
+      </nav>
+
+      <main class="content-area" id="content-area">
+        ${renderContent(tab)}
+      </main>
     </div>
 
-    <!-- Tor Status Bar -->
+    <!-- Tor status bar -->
     <div class="tor-status ${tab.mode === 'tor' ? 'visible' : ''}">
       <span class="dot"></span>
       Tor routing active — all traffic proxied through the Tor network (DNS included). No history, cookies, or cache are persisted.
     </div>
 
-    <!-- Dropdown Menu -->
+    <!-- Dropdown menu -->
     <div class="dropdown" id="dropdown">
       <div class="dropdown-item" id="menu-new-standard">
-        <span>🌐</span> New Standard Window
+        ${ICONS.globe}<span>New Standard Window</span>
       </div>
       <div class="dropdown-item" id="menu-new-tor">
-        <span>🧅</span> New Tor Privacy Window
+        ${ICONS.tor}<span>New Tor Privacy Window</span>
       </div>
       <div class="dropdown-separator"></div>
       <div class="dropdown-item" id="menu-devtools">
-        <span>🔧</span> Toggle DevTools (F12)
+        ${ICONS.code}<span>Toggle DevTools (F12)</span>
       </div>
       <div class="dropdown-item" id="menu-inspect">
-        <span>🔍</span> Inspect Element
+        ${ICONS.search}<span>Inspect Element</span>
       </div>
       <div class="dropdown-separator"></div>
       <div class="dropdown-item" id="menu-clear">
-        <span>🗑</span> Clear Session Data
+        ${ICONS.trash}<span>Clear Session Data</span>
       </div>
     </div>
   `;
@@ -214,31 +269,35 @@ function render() {
 
 function renderContent(tab) {
   if (!tab.url) {
-    // New tab page
+    // New tab page — Opera-style speed dial
     return `
       <div class="new-tab-page">
-        <div class="logo">${tab.mode === 'tor' ? '🧅' : '🛡'}</div>
-        <h1>Secure Browser</h1>
-        <p style="color:var(--text-dim);font-size:14px">
-          ${tab.mode === 'tor' ? 'Tor Privacy Mode — all traffic routed through Tor' : 'Standard Mode — stateless browsing, no history saved'}
-        </p>
-        <div class="shortcuts">
-          <a class="shortcut" data-url="https://duckduckgo.com">
-            <span class="shortcut-icon">🦆</span>
-            <span class="shortcut-label">DuckDuckGo</span>
-          </a>
-          <a class="shortcut" data-url="https://en.wikipedia.org">
-            <span class="shortcut-icon">📚</span>
-            <span class="shortcut-label">Wikipedia</span>
-          </a>
-          <a class="shortcut" data-url="https://example.com">
-            <span class="shortcut-icon">🌐</span>
-            <span class="shortcut-label">Example.com</span>
-          </a>
-          <a class="shortcut" data-url="https://httpbin.org">
-            <span class="shortcut-icon">🔧</span>
-            <span class="shortcut-label">HTTPBin</span>
-          </a>
+        <div class="ntp-inner">
+          <div class="ntp-brand">
+            <span class="ntp-logo ${tab.mode}">${tab.mode === 'tor' ? ICONS.tor : ICONS.shield}</span>
+            <h1>Secure Browser</h1>
+            <p class="ntp-sub">
+              ${tab.mode === 'tor' ? 'Tor Privacy Mode — all traffic routed through Tor' : 'Standard Mode — stateless browsing, no history saved'}
+            </p>
+          </div>
+          <div class="speed-dial">
+            <a class="dial-tile" data-url="https://duckduckgo.com">
+              <span class="dial-icon" style="--tile:#de5833">${ICONS.search}</span>
+              <span class="dial-label">DuckDuckGo</span>
+            </a>
+            <a class="dial-tile" data-url="https://en.wikipedia.org">
+              <span class="dial-icon" style="--tile:#8b8b8b">${ICONS.globe}</span>
+              <span class="dial-label">Wikipedia</span>
+            </a>
+            <a class="dial-tile" data-url="https://example.com">
+              <span class="dial-icon" style="--tile:#4c8bf5">${ICONS.globe}</span>
+              <span class="dial-label">Example.com</span>
+            </a>
+            <a class="dial-tile" data-url="https://httpbin.org">
+              <span class="dial-icon" style="--tile:#16b981">${ICONS.code}</span>
+              <span class="dial-label">HTTPBin</span>
+            </a>
+          </div>
         </div>
       </div>
     `;
@@ -249,12 +308,11 @@ function renderContent(tab) {
   return `<iframe class="content-frame" src="${escapeHtml(tab.url)}" sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
            referrerpolicy="no-referrer" id="content-frame"></iframe>
           <div class="blocked-overlay" id="blocked-overlay" style="display:none">
-            <span class="icon">🚫</span>
+            <span class="blocked-icon">${ICONS.shield}</span>
             <h2>This site can't be embedded</h2>
             <p>The site has security headers (X-Frame-Options or CSP) that prevent it from loading inside the browser preview.
                In the full Electron app, pages render in an isolated BrowserView and are not subject to this limitation.</p>
-            <a href="${escapeHtml(tab.url)}" target="_blank" rel="noopener noreferrer"
-               style="color:var(--accent);text-decoration:none;font-size:14px;margin-top:8px">Open in new tab ↗</a>
+            <a href="${escapeHtml(tab.url)}" target="_blank" rel="noopener noreferrer" class="blocked-link">Open in new tab ↗</a>
           </div>`;
 }
 
@@ -269,7 +327,7 @@ function attachEventListeners() {
   // Tab switching
   document.querySelectorAll('.tab[data-tab-id]').forEach(el => {
     el.addEventListener('click', (e) => {
-      if (e.target.classList.contains('tab-close')) return;
+      if (e.target.closest('.tab-close')) return;
       activateTab(parseInt(el.dataset.tabId));
       render();
     });
@@ -295,15 +353,7 @@ function attachEventListeners() {
   document.getElementById('back-btn').addEventListener('click', goBack);
   document.getElementById('fwd-btn').addEventListener('click', goForward);
   document.getElementById('reload-btn').addEventListener('click', reload);
-  document.getElementById('home-btn').addEventListener('click', () => {
-    const tab = getActiveTab();
-    if (tab) {
-      tab.url = '';
-      tab.title = 'New Tab';
-      saveState();
-      render();
-    }
-  });
+  document.getElementById('home-btn').addEventListener('click', goHome);
 
   // Address bar
   const urlInput = document.getElementById('url-input');
@@ -314,13 +364,24 @@ function attachEventListeners() {
     }
   });
 
-  // Shortcuts
-  document.querySelectorAll('.shortcut[data-url]').forEach(el => {
+  // Speed dial shortcuts
+  document.querySelectorAll('.dial-tile[data-url]').forEach(el => {
     el.addEventListener('click', (e) => {
       e.preventDefault();
       navigateTo(el.dataset.url);
       render();
     });
+  });
+
+  // Sidebar rail
+  document.getElementById('rail-home').addEventListener('click', goHome);
+  document.getElementById('rail-tor').addEventListener('click', () => {
+    createTab('tor');
+    render();
+  });
+  document.getElementById('rail-menu').addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleMenu();
   });
 
   // Menu
@@ -411,20 +472,17 @@ function showContextMenu(x, y) {
 
   const menu = document.createElement('div');
   menu.id = 'context-menu';
-  menu.style.cssText = `
-    position: fixed; top: ${y}px; left: ${x}px;
-    background: var(--bg-light); border: 1px solid var(--border);
-    border-radius: var(--radius); box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-    padding: 8px 0; min-width: 180px; z-index: 2000;
-  `;
+  menu.className = 'context-menu';
+  menu.style.top = `${y}px`;
+  menu.style.left = `${x}px`;
   menu.innerHTML = `
-    <div class="dropdown-item" id="ctx-back"><span>←</span> Back</div>
-    <div class="dropdown-item" id="ctx-forward"><span>→</span> Forward</div>
-    <div class="dropdown-item" id="ctx-reload"><span>⟳</span> Reload</div>
+    <div class="dropdown-item" id="ctx-back">${ICONS.back}<span>Back</span></div>
+    <div class="dropdown-item" id="ctx-forward">${ICONS.forward}<span>Forward</span></div>
+    <div class="dropdown-item" id="ctx-reload">${ICONS.reload}<span>Reload</span></div>
     <div class="dropdown-separator"></div>
-    <div class="dropdown-item" id="ctx-inspect"><span>🔍</span> Inspect Element</div>
+    <div class="dropdown-item" id="ctx-inspect">${ICONS.search}<span>Inspect Element</span></div>
     <div class="dropdown-separator"></div>
-    <div class="dropdown-item" id="ctx-newtab"><span>+</span> New Tab</div>
+    <div class="dropdown-item" id="ctx-newtab">${ICONS.plus}<span>New Tab</span></div>
   `;
   document.body.appendChild(menu);
 
