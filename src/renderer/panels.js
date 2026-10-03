@@ -5,15 +5,24 @@
 
 import { ICONS } from './icons.js';
 import { SEARCH_ENGINES, GOOGLE_APPS, WALLPAPERS, ACCENTS } from './data.js';
-import { escapeHtml, hostOf, prettyUrl, faviconColor, faviconLetter, relativeTime, initials } from './util.js';
+import {
+  escapeHtml, hostOf, prettyUrl, faviconColor, faviconLetter, faviconHost, faviconImg,
+  relativeTime, initials,
+} from './util.js';
 
 const icon = k => ICONS[k] || '';
+const LOGO = 'logo.png';
 
-function faviconTile(item) {
-  const host = hostOf(item.url) || item.title || '';
+// A site's real favicon where we can get one, otherwise a coloured letter.
+// `src` overrides the icon service — the desktop build passes the favicon that
+// the page itself declared.
+function faviconTile(item, src = '') {
+  const host = faviconHost(item.url) || faviconHost(item.title) || '';
   const color = item.color || faviconColor(host);
-  const letter = faviconLetter(host);
-  return `<span class="fav-badge" style="--fav:${color}">${escapeHtml(letter)}</span>`;
+  const img = faviconImg(host, 'fav-img', src);
+  return img
+    ? `<span class="fav-badge web" style="--fav:${color}">${img}</span>`
+    : `<span class="fav-badge" style="--fav:${color}">${escapeHtml(faviconLetter(host || 'New'))}</span>`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -41,7 +50,7 @@ export function renderNewTab(ctx) {
       <div class="ntp-veil"></div>
       <div class="ntp-body">
         <div class="ntp-head">
-          <span class="ntp-logo">${icon('shield')}</span>
+          <span class="ntp-logo"><img class="brand-logo" src="${LOGO}" alt="Secure Browser" /></span>
           <h1>Secure Browser</h1>
           <p>${greeting}${name ? ', ' + escapeHtml(name) : ''} — type a URL or search ${escapeHtml(engine.name)}</p>
         </div>
@@ -412,7 +421,11 @@ function renderTabSwitcher(ctx) {
     ? `<ul class="list">${ctx.tabs.map(t => `
         <li class="list-item ${t.id === ctx.activeTabId ? 'current' : ''}">
           <button class="li-main as-button" data-action="activate-tab" data-id="${t.id}">
-            <span class="fav-badge" style="--fav:${t.mode === 'tor' ? '#7c3aed' : '#4285f4'}">${t.mode === 'tor' ? icon('tor') : faviconLetter(hostOf(t.url) || 'New')}</span>
+            ${t.mode === 'tor'
+              ? `<span class="fav-badge" style="--fav:#7c3aed">${icon('tor')}</span>`
+              : t.mode === 'private'
+                ? `<span class="fav-badge" style="--fav:#5f6368">${icon('incognito')}</span>`
+                : faviconTile(t, t.favicon)}
             <span class="li-text">
               <span class="li-title">${escapeHtml(t.title || 'New tab')}</span>
               <span class="li-sub">${escapeHtml(t.url ? prettyUrl(t.url) : 'New tab page')}</span>
@@ -455,7 +468,7 @@ function renderAbout(ctx) {
   ];
   const body = `
     <div class="account-hero">
-      <span class="ntp-logo small">${icon('shield')}</span>
+      <span class="ntp-logo small"><img class="brand-logo" src="${LOGO}" alt="Secure Browser" /></span>
       <h3>Secure Browser</h3>
       <p>Stateless by design — no history, cache or cookies written to disk.</p>
     </div>

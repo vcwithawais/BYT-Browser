@@ -80,6 +80,22 @@ export const WALLPAPERS = [
   { name: 'Nord',     css: 'linear-gradient(140deg, #2e3440 0%, #3b4252 55%, #5e81ac 100%)' },
 ];
 
+// Hosts that send `X-Frame-Options` / a CSP `frame-ancestors` rule, so a web
+// page is not allowed to embed them at all (a browser rule, not a bug). The
+// desktop build renders these natively in a Chromium view, where it applies.
+export const FRAME_BLOCKED_HOSTS = [
+  'google.com', 'youtube.com', 'gmail.com', 'facebook.com', 'instagram.com',
+  'x.com', 'twitter.com', 'linkedin.com', 'reddit.com', 'amazon.com',
+  'github.com', 'netflix.com', 'tiktok.com', 'whatsapp.com', 'twitch.tv',
+  'pinterest.com', 'chatgpt.com', 'openai.com', 'soundcloud.com', 'spotify.com',
+];
+
+export function hostBlocksFraming(host) {
+  const h = String(host || '').toLowerCase();
+  if (!h) return false;
+  return FRAME_BLOCKED_HOSTS.some(d => h === d || h.endsWith(`.${d}`));
+}
+
 export const ACCENTS = [
   '#fb542b', '#4285f4', '#0f9d58', '#f4b400',
   '#7c3aed', '#db2777', '#0891b2', '#ea4335',

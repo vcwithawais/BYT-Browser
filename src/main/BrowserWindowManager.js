@@ -4,6 +4,7 @@
 
 const { BrowserWindow, BrowserView, session } = require('electron');
 const path = require('path');
+const fs = require('fs');
 
 let windowCounter = 0;
 let tabCounter = 0;
@@ -45,12 +46,16 @@ class BrowserWindowManager {
       });
     }
 
+    // App icon (also what Windows shows in the taskbar and title bar)
+    const iconPath = path.join(__dirname, '..', '..', 'build', 'icon.png');
+
     const win = new BrowserWindow({
       width: 1200,
       height: 800,
       minWidth: 600,
       minHeight: 400,
       titleBarStyle: 'hiddenInset',
+      icon: fs.existsSync(iconPath) ? iconPath : undefined,
       backgroundColor: '#1a1a2e',
       webPreferences: {
         preload: path.join(__dirname, '..', 'preload', 'preload.js'),
@@ -178,6 +183,115 @@ class BrowserWindowManager {
     if (!tabInfo || tabInfo.historyIndex >= tabInfo.history.length - 1) return;
     tabInfo.historyIndex++;
     tabInfo.view.webContents.loadURL(tabInfo.history[tabInfo.historyIndex]);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Native page views (desktop build)                                  */
+  /*                                                                     */
+  /*  The renderer draws the browser chrome; the page itself is a real   */
+  /*  Chromium view painted over the content area. That is what lets     */
+  /*  Google, YouTube and every other site open normally, which an       */
+  /*  <iframe> can never do (X-Frame-Options / CSP frame-ancestors).     */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Show (or refresh) the page view for a tab.
+   * @param {BrowserWindow} win
+   * @param {{tabId:string,url:string,mode?:string,zoom?:number,bounds:{x,y,width,height}}} opts
+   */
+  showNativeView(win, opts = {}) {
+    const windowId = this._getWindowId(win);
+    const info = this.windows.get(windowId);
+    if (!info || !opts.tabId || !opts.bounds) return null;
+
+    let tab = info.views.get(opts.tabId);
+    if (!tab) {
+      const ses = session.fromPartition(`${opts.mode || 'standard'}-${windowId}-${opts.tabId}`, { cache: false });
+      if (opts.mode === 'tor' && this.torManager) {
+        ses.setProxy({ proxyRules: 'socks5://127.0.0.1:9050' })
+          .catch(err => console.error('[BrowserWindowManager] Native view proxy error:', err));
+      }
+      const view = new BrowserView({
+        webPreferences: { session: ses, contextIsolation: true, nodeIntegration: false },
+      });
+
+      // Report the favicon the page itself declares, so the tab strip shows the
+      // site's real icon rather than a guess.
+      view.webContents.on('page-favicon-updated', (_event, favicons) => {
+        if (!win.isDestroyed() && favicons && favicons.length) {
+          win.webContents.send('native:favicon', {
+            tabId: opts.tabId,
+            favicon: favicons[favicons.length - 1],
+          });
+        }
+      });
+
+      tab = { view, mode: opts.mode || 'standard', url: '', native: true, attached: false };
+      info.views.set(opts.tabId, tab);
+    }
+
+    if (opts.url && opts.url !== tab.url) {
+      tab.url = opts.url;
+      tab.view.webContents.loadURL(opts.url).catch(err => {
+        // Aborted navigations (a redirect, a stop) are normal — only report others.
+        if (err && !/ERR_ABORTED/.test(err.message)) {
+          console.error('[BrowserWindowManager] Native view failed to load:', opts.url, err.message);
+        }
+      });
+    }
+    if (opts.zoom) {
+      tab.view.webContents.setZoomFactor(Math.max(0.25, Math.min(5, opts.zoom)));
+    }
+
+    // Only the active tab's view stays attached, so a hidden tab can never
+    // paint over the one in front of the user.
+    for (const [id, other] of info.views) {
+      if (id !== opts.tabId && other.native && other.attached) {
+        win.removeBrowserView(other.view);
+        other.attached = false;
+      }
+    }
+
+    const b = opts.bounds;
+    tab.view.setBounds({
+      x: Math.round(b.x),
+      y: Math.round(b.y),
+      width: Math.max(0, Math.round(b.width)),
+      height: Math.max(0, Math.round(b.height)),
+    });
+    if (!tab.attached) {
+      win.addBrowserView(tab.view);
+      tab.attached = true;
+    } else {
+      win.setTopBrowserView(tab.view);
+    }
+
+    return opts.tabId;
+  }
+
+  /** Detach every native view (panel open, new tab page, window gone). */
+  hideNativeViews(win) {
+    const windowId = this._getWindowId(win);
+    const info = this.windows.get(windowId);
+    if (!info || win.isDestroyed()) return;
+    for (const [, tab] of info.views) {
+      if (tab.native && tab.attached) {
+        win.removeBrowserView(tab.view);
+        tab.attached = false;
+      }
+    }
+  }
+
+  /** Close one tab's native view and drop its in-memory session. */
+  closeNativeView(win, tabId) {
+    const windowId = this._getWindowId(win);
+    const info = this.windows.get(windowId);
+    if (!info) return;
+    const tab = info.views.get(tabId);
+    if (!tab) return;
+    if (tab.attached && !win.isDestroyed()) win.removeBrowserView(tab.view);
+    tab.view.webContents.destroy();
+    info.views.delete(tabId);
   }
 
   closeWindow(windowId) {

@@ -45,6 +45,37 @@ export function faviconLetter(seed) {
   return (m ? m[0] : '?').toUpperCase();
 }
 
+// The bare hostname behind a shortcut / bookmark / history entry, which may be
+// stored either as a full URL or as a bare domain ("github.com").
+export function faviconHost(seed) {
+  const s = String(seed || '').trim();
+  if (!s) return '';
+  if (/^[a-z]+:\/\//i.test(s)) return hostOf(s);
+  return hostOf(`https://${s.replace(/^\/+/, '')}`);
+}
+
+// Where a site's real favicon comes from. Google's favicon service first (the
+// most reliable one, and reachable from most networks), DuckDuckGo's icon
+// service as a second attempt, and finally a coloured letter tile.
+export function faviconSources(seed) {
+  const host = faviconHost(seed);
+  if (!host) return [];
+  return [
+    `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`,
+    `https://icons.duckduckgo.com/ip3/${encodeURIComponent(host)}.ico`,
+  ];
+}
+
+// Markup for a site's real favicon. `src` overrides the first source (the
+// desktop build hands over the favicon the page itself declared). If every
+// source fails the renderer swaps in a coloured letter tile.
+export function faviconImg(seed, cls = 'fav-img', src = '') {
+  const host = faviconHost(seed);
+  const url = src || faviconSources(seed)[0];
+  if (!url) return '';
+  return `<img class="${cls}" src="${escapeHtml(url)}" data-host="${escapeHtml(host)}" alt="" loading="lazy" referrerpolicy="no-referrer" />`;
+}
+
 // Is this string a URL (rather than a search query)?
 export function looksLikeUrl(input) {
   const s = input.trim();

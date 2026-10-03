@@ -77,6 +77,22 @@ ipcMain.handle('tab:goForward', (event, tabId) => {
   return windowManager.goForward(win, tabId);
 });
 
+// ---- Native page views (the renderer's content area) ----
+ipcMain.handle('native:show', (event, opts) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  return windowManager.showNativeView(win, opts);
+});
+
+ipcMain.handle('native:hide', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  return windowManager.hideNativeViews(win);
+});
+
+ipcMain.handle('native:close', (event, tabId) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  return windowManager.closeNativeView(win, tabId);
+});
+
 ipcMain.handle('devtools:toggle', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (win.webContents.isDevToolsOpened()) {

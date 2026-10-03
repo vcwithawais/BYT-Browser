@@ -16,6 +16,13 @@ contextBridge.exposeInMainWorld('secureBrowser', {
   goBack: (tabId) => ipcRenderer.invoke('tab:goBack', tabId),
   goForward: (tabId) => ipcRenderer.invoke('tab:goForward', tabId),
 
+  // Native page rendering — the desktop build paints real pages over the
+  // content area, so sites that forbid framing open normally.
+  showNativeView: (opts) => ipcRenderer.invoke('native:show', opts),
+  hideNativeView: () => ipcRenderer.invoke('native:hide'),
+  closeNativeTab: (tabId) => ipcRenderer.invoke('native:close', tabId),
+  onTabFavicon: (cb) => ipcRenderer.on('native:favicon', (_event, data) => cb(data)),
+
   // DevTools
   toggleDevTools: () => ipcRenderer.invoke('devtools:toggle'),
   inspectElement: (x, y) => ipcRenderer.invoke('devtools:inspect', x, y),

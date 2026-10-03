@@ -7,13 +7,18 @@
 // independently so that changing a preference never reloads the open page.
 
 import { ICONS } from './icons.js';
-import { SEARCH_ENGINES, DEFAULT_SEARCH_ENGINE, GOOGLE_APPS, DEFAULT_SHORTCUTS, ACCENTS } from './data.js';
+import { SEARCH_ENGINES, DEFAULT_SEARCH_ENGINE, GOOGLE_APPS, DEFAULT_SHORTCUTS, ACCENTS, hostBlocksFraming } from './data.js';
 import * as store from './store.js';
 import { renderNewTab, renderPanel } from './panels.js';
 import {
   escapeHtml, uid, hostOf, prettyUrl, normalizeInput, looksLikeUrl,
-  faviconColor, faviconLetter, relativeTime, initials,
+  faviconColor, faviconLetter, faviconHost, faviconImg, faviconSources, relativeTime, initials,
 } from './util.js';
+
+// The desktop build injects `secureBrowser` from the preload script. When it is
+// present, real pages are rendered by a native Chromium view instead of an
+// <iframe>, so sites that forbid embedding (Google, YouTube, …) work normally.
+const electron = (typeof window !== 'undefined' && window.secureBrowser) || null;
 
 const icon = k => ICONS[k] || '';
 const $ = (s, r = document) => r.querySelector(s);
@@ -100,6 +105,7 @@ function closeTab(id) {
   const idx = state.tabs.findIndex(t => t.id === id);
   if (idx === -1) return;
   const [closed] = state.tabs.splice(idx, 1);
+  if (electron && electron.closeNativeTab) electron.closeNativeTab(id);
   if (closed.url && closed.mode !== 'private') {
     state.closedTabs.unshift({ url: closed.url, title: closed.title });
     state.closedTabs = state.closedTabs.slice(0, 25);
@@ -392,11 +398,15 @@ function renderAll(force = false) {
 
 function tabMarkup(t) {
   const active = t.id === state.activeTabId ? 'active' : '';
+  const host = faviconHost(t.url);
+  const img = t.mode === 'standard' && t.url ? faviconImg(host, 'fav-img', t.favicon) : '';
   const fav = t.mode === 'tor'
     ? `<span class="tab-favicon tor">${icon('tor')}</span>`
     : t.mode === 'private'
       ? `<span class="tab-favicon private">${icon('incognito')}</span>`
-      : `<span class="tab-favicon" style="--fav:${faviconColor(hostOf(t.url) || 'new')}">${t.url ? faviconLetter(hostOf(t.url)) : icon('globe')}</span>`;
+      : img
+        ? `<span class="tab-favicon web" style="--fav:${faviconColor(host)}">${img}</span>`
+        : `<span class="tab-favicon" style="--fav:${faviconColor(host || 'new')}">${t.url ? escapeHtml(faviconLetter(host)) : icon('globe')}</span>`;
   return `
     <div class="tab ${active} ${t.mode} ${t.pinned ? 'pinned' : ''}" data-tab-id="${t.id}" draggable="true" title="${escapeHtml(t.title)}">
       ${fav}
@@ -497,6 +507,7 @@ function applyLayout() {
   body.classList.toggle('sidebar-off', !prefs.sidebar);
   body.classList.toggle('compact', prefs.density === 'compact');
   $('#vtabs-toggle').classList.toggle('on', prefs.verticalTabs);
+  syncNativeView();
 }
 
 /* ------------------------------ Content ---------------------------- */
@@ -517,12 +528,30 @@ function renderContent(force = false) {
 
   if (state.panel) {
     area.innerHTML = renderPanel(state.panel, ctx());
+    syncNativeView();
     return;
   }
 
   const t = getActiveTab();
-  if (!t) { area.innerHTML = ''; return; }
-  if (!t.url) { area.innerHTML = renderNewTab(ctx()); return; }
+  if (!t) { area.innerHTML = ''; syncNativeView(); return; }
+  if (!t.url) { area.innerHTML = renderNewTab(ctx()); syncNativeView(); return; }
+  if (electron) {
+    // Desktop build: a native Chromium view is painted over this area, so no
+    // site can refuse to be displayed the way it can inside an <iframe>.
+    area.innerHTML = `<div class="native-host"></div>`;
+    syncNativeView();
+    stopLoading();
+    return;
+  }
+
+  stopLoading();
+
+  // Known to forbid embedding — say so immediately instead of flashing an
+  // empty frame that will never load.
+  if (hostBlocksFraming(faviconHost(t.url))) {
+    area.innerHTML = blockedMarkup(t.url, t.title, true);
+    return;
+  }
 
   area.innerHTML = `
     <div class="page-wrap">
@@ -531,17 +560,7 @@ function renderContent(force = false) {
               referrerpolicy="${prefs.shield ? 'no-referrer' : 'strict-origin-when-cross-origin'}"
               title="${escapeHtml(t.title)}"></iframe>
     </div>
-    <div class="blocked-overlay" id="blocked-overlay" style="display:none">
-      <span class="blocked-icon">${icon('globe')}</span>
-      <h2>This site can’t be displayed in the preview</h2>
-      <p>Most large sites send <code>X-Frame-Options</code> or a CSP <code>frame-ancestors</code> rule that forbids being embedded in a web page. In the desktop build the same page renders natively in an isolated Chromium view, so this limitation does not apply there.</p>
-      <div class="blocked-actions">
-        <button class="btn btn-primary" data-action="open-url-new" data-url="${escapeHtml(t.url)}">${icon('external')} Open in a new tab</button>
-        <button class="btn btn-ghost" data-action="reload">${icon('reload')} Try again</button>
-      </div>
-    </div>`;
-
-  stopLoading();
+    ${blockedMarkup(t.url, t.title, false)}`;
 
   const frame = $('#content-frame');
   let loaded = false;
@@ -552,6 +571,42 @@ function renderContent(force = false) {
       if (ov) ov.style.display = 'flex';
     }
   }, 3000);
+}
+
+// Shown when a site refuses to be embedded in a web page (X-Frame-Options /
+// CSP frame-ancestors). Nothing outside the browser engine can override it, so
+// the way through is the desktop build or the user's own browser.
+function blockedMarkup(url, title, visible) {
+  const host = hostOf(url) || title || 'This site';
+  return `
+    <div class="blocked-overlay" id="blocked-overlay" style="display:${visible ? 'flex' : 'none'}">
+      <span class="blocked-icon">${icon('globe')}</span>
+      <h2>This site can’t be shown inside a web page</h2>
+      <p><strong>${escapeHtml(host)}</strong> sends <code>X-Frame-Options</code> or a CSP <code>frame-ancestors</code> rule that forbids other pages from embedding it — Google, YouTube and most large sites do this.</p>
+      <div class="blocked-actions">
+        <button class="btn btn-primary" data-action="open-external" data-url="${escapeHtml(url)}">${icon('external')} Open in your browser</button>
+        <button class="btn btn-ghost" data-action="reload">${icon('reload')} Try again</button>
+      </div>
+      <p class="blocked-note">In the desktop app these pages render natively and open normally.</p>
+    </div>`;
+}
+
+// Desktop build only: keep the native page view aligned with the content area
+// and pointed at the active tab.
+function syncNativeView() {
+  if (!electron || !electron.showNativeView) return;
+  const area = $('#content-area');
+  const t = getActiveTab();
+  if (!area) return;
+  if (state.panel || !t || !t.url) { electron.hideNativeView(); return; }
+  const r = area.getBoundingClientRect();
+  electron.showNativeView({
+    tabId: t.id,
+    url: t.url,
+    mode: t.mode,
+    zoom: t.zoom,
+    bounds: { x: r.left, y: r.top, width: r.width, height: r.height },
+  });
 }
 
 function ctx() {
@@ -794,6 +849,9 @@ const ACTIONS = {
   'close-panel': () => { state.panel = null; contentKey = ''; renderAll(); },
   'open-url': el => { navigate(el.dataset.url); closeOverlays(); },
   'open-url-new': el => { createTab('standard', el.dataset.url); closeOverlays(); },
+  // Escape hatch for sites that forbid being embedded: hand the URL to the
+  // user's real browser.
+  'open-external': el => { window.open(el.dataset.url, '_blank', 'noopener,noreferrer'); },
 
   'add-shortcut': () => shortcutModal(),
   'edit-shortcut': el => shortcutModal(state.shortcuts.find(s => s.id === el.dataset.id)),
@@ -1027,6 +1085,28 @@ function hydrateFromStore() {
 /*  Event wiring                                                      */
 /* ------------------------------------------------------------------ */
 
+/* --------------------------- real favicons ------------------------- */
+
+// <img> error events do not bubble, so listen in the capture phase: first retry
+// through the second icon service, then fall back to a coloured letter tile.
+function handleFaviconError(e) {
+  const img = e.target;
+  if (!img || img.tagName !== 'IMG' || !img.classList.contains('fav-img')) return;
+  const host = img.dataset.host || '';
+  const secondSource = faviconSources(host)[1];
+  if (secondSource && !img.dataset.retried) {
+    img.dataset.retried = '1';
+    img.src = secondSource;
+    return;
+  }
+  const tile = img.closest('.web');
+  const letter = document.createElement('span');
+  letter.className = 'fav-letter';
+  letter.textContent = faviconLetter(host);
+  if (tile) tile.classList.remove('web');
+  img.replaceWith(letter);
+}
+
 function attachStaticListeners() {
   // Global action delegation
   document.addEventListener('click', e => {
@@ -1156,6 +1236,12 @@ function attachStaticListeners() {
   // Keyboard shortcuts
   document.addEventListener('keydown', handleKeys);
 
+  // Real site favicons (see handleFaviconError)
+  document.addEventListener('error', handleFaviconError, true);
+
+  // Desktop build: the native page view follows the window geometry
+  window.addEventListener('resize', syncNativeView);
+
   // React to OS theme changes when following the system
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (prefs.theme === 'system') applyTheme(); });
 }
@@ -1253,6 +1339,16 @@ function showPageMenu(x, y) {
 function boot() {
   ensureShell();
   applyTheme();
+
+  // Desktop build: use the favicon the open page actually declared.
+  if (electron && electron.onTabFavicon) {
+    electron.onTabFavicon(({ tabId, favicon }) => {
+      const t = state.tabs.find(x => x.id === tabId);
+      if (!t || !favicon || t.favicon === favicon) return;
+      t.favicon = favicon;
+      renderTabs();
+    });
+  }
 
   if (!state.tabs.length) {
     createTab('standard');
