@@ -22,7 +22,14 @@
 - 💬 Ask me about **Electron**, **Node.js**, browser internals or building a UI that feels native.
 - ⚡ Principle I build by: if it doesn't need to be stored, it doesn't get stored.
 
-## Tech I work with
+## Tech stack
+
+| | |
+| --- | --- |
+| **Languages** | JavaScript · HTML5 · CSS3 |
+| **Desktop & runtime** | Electron 33 · Node.js · `BrowserView` · Chromium sessions |
+| **Build & tooling** | Vite 6 · electron-builder · npm · Git |
+| **Security & privacy** | Tor / SOCKS5 · DNS-leak prevention · `contextIsolation` · in-memory sessions |
 
 <p>
   <img alt="JavaScript" src="https://img.shields.io/badge/JavaScript-F7DF1E?logo=javascript&logoColor=black" />
@@ -55,6 +62,15 @@
     </td>
   </tr>
 </table>
+
+## Recent BYT Browser work
+
+| When | Milestone |
+| --- | --- |
+| Oct 2026 | **Native page views** — each tab renders as a real Chromium `BrowserView`, so sites that block embedding (Google, YouTube) work; Windows packaging config added |
+| Oct 2026 | **Modular, multi-engine chrome** — the browser shell split into focused renderer modules with a browser-style layout |
+| Oct 2026 | **Browser-style redesign** — tab strip, omnibox, panels and light/dark theming rebuilt from the ground up |
+| Oct 2026 | **Foundation** — Electron shell with stateless in-memory sessions and a bundled Tor daemon proxying over SOCKS5 |
 
 ## GitHub at a glance
 
