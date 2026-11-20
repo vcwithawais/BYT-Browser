@@ -1,0 +1,69 @@
+name: Refresh tech stack
+
+# Keeps the "Languages" row of README.md in sync with the languages GitHub
+# reports for SOURCE_REPO. Runs on every push to main, and can be triggered
+# by hand from the Actions tab.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # Repository whose languages drive the table. If this workflow lives in your
+  # profile repo (which has no code of its own), point it at your main project:
+  #   SOURCE_REPO: vcwithawais/BYT-Browser
+  SOURCE_REPO: ${{ github.repository }}
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rebuild the Languages row
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          LANGS="$(gh api "repos/$SOURCE_REPO/languages" --jq 'to_entries | sort_by(-.value) | .[0:5] | map(.key) | join(" · ")')"
+          if [ -z "$LANGS" ]; then
+            echo "No languages reported for $SOURCE_REPO - leaving README.md untouched."
+            exit 0
+          fi
+          LANGS="$LANGS" python3 - <<'PY'
+          import os, pathlib, re
+
+          langs = os.environ["LANGS"]
+          readme = pathlib.Path("README.md")
+          text = readme.read_text(encoding="utf-8")
+          block = f"<!-- LANGUAGES:START -->{langs}<!-- LANGUAGES:END -->"
+          updated, count = re.subn(
+              r"<!-- LANGUAGES:START -->.*?<!-- LANGUAGES:END -->",
+              lambda _match: block,
+              text,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f"expected one LANGUAGES marker pair in README.md, found {count}")
+          if updated != text:
+              readme.write_text(updated, encoding="utf-8")
+              print(f"Languages row updated: {langs}")
+          else:
+              print("Languages row already up to date.")
+          PY
+
+      - name: Commit changes
+        run: |
+          if git diff --quiet -- README.md; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "chore: refresh tech stack languages"
+          git push

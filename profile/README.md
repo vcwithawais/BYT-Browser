@@ -24,20 +24,49 @@
 
 ## Tech stack
 
-| | |
-| --- | --- |
-| **Languages** | JavaScript · HTML5 · CSS3 |
-| **Desktop & runtime** | Electron 33 · Node.js · `BrowserView` · Chromium sessions |
-| **Build & tooling** | Vite 6 · electron-builder · npm · Git |
-| **Security & privacy** | Tor / SOCKS5 · DNS-leak prevention · `contextIsolation` · in-memory sessions |
+<table>
+  <tr>
+    <td valign="top" width="50%">
+      <strong>Languages</strong><br/>
+      <sub><!-- LANGUAGES:START -->JavaScript · HTML5 · CSS3 · Python<!-- LANGUAGES:END --></sub>
+    </td>
+    <td valign="top" width="50%">
+      <strong>Desktop &amp; runtime</strong><br/>
+      <sub>Electron 33 · Node.js · BrowserView · Chromium sessions</sub>
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <br/>
+      <strong>Build &amp; tooling</strong><br/>
+      <sub>Vite 6 · electron-builder · Docker · npm · Git</sub>
+    </td>
+    <td valign="top">
+      <br/>
+      <strong>Cloud</strong><br/>
+      <sub>AWS · cloud infrastructure</sub>
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <br/>
+      <strong>Security &amp; privacy</strong><br/>
+      <sub>Tor / SOCKS5 · DNS-leak prevention · contextIsolation · in-memory sessions</sub>
+    </td>
+    <td valign="top"></td>
+  </tr>
+</table>
 
 <p>
   <img alt="JavaScript" src="https://img.shields.io/badge/JavaScript-F7DF1E?logo=javascript&logoColor=black" />
   <img alt="HTML5" src="https://img.shields.io/badge/HTML5-E34F26?logo=html5&logoColor=white" />
   <img alt="CSS3" src="https://img.shields.io/badge/CSS3-1572B6?logo=css3&logoColor=white" />
+  <img alt="Python" src="https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white" />
   <img alt="Node.js" src="https://img.shields.io/badge/Node.js-339933?logo=node.js&logoColor=white" />
   <img alt="Electron" src="https://img.shields.io/badge/Electron-47848F?logo=electron&logoColor=white" />
   <img alt="Vite" src="https://img.shields.io/badge/Vite-646CFF?logo=vite&logoColor=white" />
+  <img alt="Docker" src="https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white" />
+  <img alt="AWS" src="https://img.shields.io/badge/AWS-232F3E?logo=amazonwebservices&logoColor=white" />
   <img alt="Git" src="https://img.shields.io/badge/Git-F05032?logo=git&logoColor=white" />
 </p>
 
@@ -81,6 +110,16 @@
 
 <p>
   <img alt="Streak" src="https://streak-stats.demolab.com?user=vcwithawais&hide_border=true&theme=transparent&ring=FB542B&fire=FB542B&currStreakLabel=FB542B" />
+</p>
+
+## Contribution activity
+
+<p>
+  <img alt="Contribution graph" src="https://ghchart.rshah.org/FB542B/vcwithawais" />
+</p>
+
+<p>
+  <img alt="Activity graph" src="https://github-readme-activity-graph.vercel.app/graph?username=vcwithawais&hide_border=true&bg_color=00000000&color=FB542B&line=FB542B&point=FB542B" />
 </p>
 
 ## Connect
